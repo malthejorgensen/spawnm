@@ -19,7 +19,7 @@ def get_cache_dir():
         base = Path(xdg_cache)
     else:
         base = Path.home() / ".local/state"
-    cache_dir = base / "spawm"
+    cache_dir = base / "spawnm"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -282,8 +282,8 @@ def cmd_destroy(args):
         print(f"  - {name} ({ip})")
     print()
     print("Please specify which instance to destroy:")
-    print("  spawm destroy <name>")
-    print("  spawm destroy --all")
+    print("  spawnm destroy <name>")
+    print("  spawnm destroy --all")
     sys.exit(1)
 
 
@@ -292,7 +292,7 @@ def add_create_args(parser, default_name):
     parser.add_argument(
         "--name",
         default=default_name,
-        help="Server name (default: spawn-tmp-XXXX, random suffix)",
+        help="Server name (default: spawnm-tmp-XXXX, random suffix)",
     )
     parser.add_argument(
         "--size",
@@ -325,21 +325,21 @@ def add_create_args(parser, default_name):
 
 
 def main():
-    default_name = f"spawn-tmp-{generate_random_suffix()}"
+    default_name = f"spawnm-tmp-{generate_random_suffix()}"
 
     parser = argparse.ArgumentParser(
         description="Quickly spin up Hetzner instances.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Commands:
-    spawm [create]  Create a new instance (default)
-    spawm destroy   Destroy an instance
+    spawnm [create]  Create a new instance (default)
+    spawnm destroy   Destroy an instance
 
 Examples:
-    spawm --ssh --workdir
-    spawm create --name web-server --size cx33
-    spawm destroy my-server
-    spawm destroy --all
+    spawnm --ssh --workdir
+    spawnm create --name web-server --size cx33
+    spawnm destroy my-server
+    spawnm destroy --all
 """,
     )
     subparsers = parser.add_subparsers(dest="command")

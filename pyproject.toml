@@ -1,5 +1,5 @@
 [project]
-name = "spawm"
+name = "spawnm"
 version = "0.1.0"
 description = "Quickly spin up Hetzner instances"
 readme = "README.md"
@@ -8,4 +8,4 @@ license = "BSD-2-Clause"
 dependencies = []
 
 [project.scripts]
-spawm = "main:main"
+spawnm = "main:main"
