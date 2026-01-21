@@ -1,0 +1,11 @@
+[project]
+name = "spawm"
+version = "0.1.0"
+description = "Quickly spin up Hetzner instances"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "BSD-2-Clause"
+dependencies = []
+
+[project.scripts]
+spawm = "main:main"
