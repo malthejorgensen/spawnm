@@ -3,7 +3,7 @@ name = "spawnm"
 version = "0.1.0"
 description = "Quickly spin up Hetzner instances"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.9"
 license = "BSD-2-Clause"
 dependencies = []
 
