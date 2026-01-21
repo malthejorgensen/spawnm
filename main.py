@@ -7,6 +7,7 @@ import shutil
 import string
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -76,7 +77,81 @@ def check_hcloud_authenticated():
         sys.exit(1)
 
 
-def create_server(name, size, image, location, ssh_key):
+SSH_KEY_PATH = "~/.ssh/id_hetzner"
+
+
+def wait_for_ssh(ip, timeout=60):
+    """Wait for SSH to become available on the server."""
+    start = time.time()
+    while time.time() - start < timeout:
+        result = subprocess.run(
+            [
+                "ssh",
+                "-i",
+                os.path.expanduser(SSH_KEY_PATH),
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "ConnectTimeout=5",
+                "-o",
+                "BatchMode=yes",
+                f"root@{ip}",
+                "true",
+            ],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return True
+        time.sleep(2)
+    return False
+
+
+def sync_workdir(ip, workdir):
+    """Sync local directory to remote server using rsync."""
+    workdir = Path(workdir).resolve()
+    remote_path = f"/root/{workdir.name}"
+
+    print(f"Syncing {workdir} to {remote_path}...")
+
+    result = subprocess.run(
+        [
+            "rsync",
+            "-avz",
+            "--progress",
+            "-e",
+            f"ssh -i {os.path.expanduser(SSH_KEY_PATH)} -o StrictHostKeyChecking=no",
+            f"{workdir}/",
+            f"root@{ip}:{remote_path}/",
+        ]
+    )
+
+    if result.returncode == 0:
+        print(f"Synced to {remote_path}")
+        return remote_path
+    else:
+        print("Warning: rsync failed")
+        return None
+
+
+def ssh_into_server(ip, workdir=None):
+    """SSH into the server, replacing current process."""
+    ssh_cmd = [
+        "ssh",
+        "-i",
+        os.path.expanduser(SSH_KEY_PATH),
+        "-o",
+        "StrictHostKeyChecking=no",
+        f"root@{ip}",
+    ]
+
+    if workdir:
+        # Start in the synced directory
+        ssh_cmd.extend(["-t", f"cd {workdir} && exec $SHELL -l"])
+
+    os.execvp("ssh", ssh_cmd)
+
+
+def create_server(name, size, image, location, ssh_key, do_ssh=False, workdir=None):
     cmd = [
         "hcloud",
         "server",
@@ -116,11 +191,12 @@ def create_server(name, size, image, location, ssh_key):
         capture_output=True,
         text=True,
     )
+    ip = None
     if result.returncode == 0:
         server_info = json.loads(result.stdout)
         ip = server_info.get("public_net", {}).get("ipv4", {}).get("ip")
         if ip:
-            print(f"ssh -i ~/.ssh/id_hetzner root@{ip}")
+            print(f"ssh -i {SSH_KEY_PATH} root@{ip}")
 
         # Save instance to cache
         add_instance(
@@ -135,6 +211,21 @@ def create_server(name, size, image, location, ssh_key):
             },
         )
 
+    if ip and (do_ssh or workdir):
+        print()
+        print("Waiting for SSH to become available...")
+        if not wait_for_ssh(ip):
+            print("Warning: SSH not available after timeout, trying anyway...")
+
+        remote_workdir = None
+        if workdir:
+            remote_workdir = sync_workdir(ip, workdir)
+
+        if do_ssh:
+            print()
+            print("Connecting...")
+            ssh_into_server(ip, remote_workdir)
+
 
 def destroy_server(name):
     result = subprocess.run(["hcloud", "server", "delete", name])
@@ -146,7 +237,16 @@ def destroy_server(name):
 
 def cmd_create(args):
     check_hcloud_installed()
-    create_server(args.name, args.size, args.image, args.location, args.ssh_key)
+    workdir = os.getcwd() if args.workdir else None
+    create_server(
+        args.name,
+        args.size,
+        args.image,
+        args.location,
+        args.ssh_key,
+        do_ssh=args.ssh,
+        workdir=workdir,
+    )
 
 
 def cmd_destroy(args):
@@ -187,40 +287,69 @@ def cmd_destroy(args):
     sys.exit(1)
 
 
+def add_create_args(parser, default_name):
+    """Add create command arguments to a parser."""
+    parser.add_argument(
+        "--name",
+        default=default_name,
+        help="Server name (default: spawn-tmp-XXXX, random suffix)",
+    )
+    parser.add_argument(
+        "--size",
+        default="cx23",
+        help="Server type (default: cx23). Examples: cx23, cx33, cx43",
+    )
+    parser.add_argument(
+        "--image", default="ubuntu-24.04", help="OS image (default: ubuntu-24.04)"
+    )
+    parser.add_argument(
+        "--location",
+        default="fsn1",
+        help="Datacenter location (default: fsn1). Options: fsn1, nbg1, hel1, ash",
+    )
+    parser.add_argument(
+        "--ssh-key",
+        default="id_hetzner_macbook_air",
+        help="SSH key name in Hetzner Cloud",
+    )
+    parser.add_argument(
+        "--ssh",
+        action="store_true",
+        help="SSH into the server after creation",
+    )
+    parser.add_argument(
+        "--workdir",
+        action="store_true",
+        help="Sync current directory to the server",
+    )
+
+
 def main():
     default_name = f"spawn-tmp-{generate_random_suffix()}"
 
     parser = argparse.ArgumentParser(
         description="Quickly spin up Hetzner instances.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Commands:
+    spawm [create]  Create a new instance (default)
+    spawm destroy   Destroy an instance
+
+Examples:
+    spawm --ssh --workdir
+    spawm create --name web-server --size cx33
+    spawm destroy my-server
+    spawm destroy --all
+""",
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    # Create command
+    # Add create args to main parser (for default behavior)
+    add_create_args(parser, default_name)
+
+    # Create command (explicit)
     create_parser = subparsers.add_parser("create", help="Create a new instance")
-    create_parser.add_argument(
-        "--name",
-        default=default_name,
-        help="Server name (default: spawn-tmp-XXXX, random suffix)",
-    )
-    create_parser.add_argument(
-        "--size",
-        default="cx23",
-        help="Server type (default: cx23). Examples: cx23, cx33, cx43",
-    )
-    create_parser.add_argument(
-        "--image", default="ubuntu-24.04", help="OS image (default: ubuntu-24.04)"
-    )
-    create_parser.add_argument(
-        "--location",
-        default="fsn1",
-        help="Datacenter location (default: fsn1). Options: fsn1, nbg1, hel1, ash",
-    )
-    create_parser.add_argument(
-        "--ssh-key",
-        default="id_hetzner_macbook_air",
-        help="SSH key name in Hetzner Cloud",
-    )
+    add_create_args(create_parser, default_name)
 
     # Destroy command
     destroy_parser = subparsers.add_parser("destroy", help="Destroy an instance")
@@ -231,53 +360,11 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "create":
-        cmd_create(args)
-    elif args.command == "destroy":
+    if args.command == "destroy":
         cmd_destroy(args)
     else:
-        # Default to create for backwards compatibility
-        # Re-parse with create as implicit command
-        create_parser = argparse.ArgumentParser(
-            description="Quickly spin up Hetzner instances.",
-            formatter_class=argparse.RawDescriptionHelpFormatter,
-            epilog="""
-Commands:
-    spawm create    Create a new instance
-    spawm destroy   Destroy an instance
-
-Examples:
-    spawm create --name web-server --size cx33
-    spawm destroy my-server
-    spawm destroy --all
-""",
-        )
-        create_parser.add_argument(
-            "--name",
-            default=default_name,
-            help="Server name (default: spawn-tmp-XXXX, random suffix)",
-        )
-        create_parser.add_argument(
-            "--size",
-            default="cx23",
-            help="Server type (default: cx23). Examples: cx23, cx33, cx43",
-        )
-        create_parser.add_argument(
-            "--image", default="ubuntu-24.04", help="OS image (default: ubuntu-24.04)"
-        )
-        create_parser.add_argument(
-            "--location",
-            default="fsn1",
-            help="Datacenter location (default: fsn1). Options: fsn1, nbg1, hel1, ash",
-        )
-        create_parser.add_argument(
-            "--ssh-key",
-            default="id_hetzner_macbook_air",
-            help="SSH key name in Hetzner Cloud",
-        )
-        args = create_parser.parse_args()
-        check_hcloud_installed()
-        create_server(args.name, args.size, args.image, args.location, args.ssh_key)
+        # Default to create (covers both explicit "create" and no command)
+        cmd_create(args)
 
 
 if __name__ == "__main__":
