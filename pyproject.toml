@@ -9,3 +9,6 @@ dependencies = []
 
 [project.scripts]
 spawnm = "main:main"
+
+[tool.uv]
+package = true
