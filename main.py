@@ -249,6 +249,52 @@ def cmd_create(args):
     )
 
 
+def cmd_list(args):
+    check_hcloud_installed()
+    cached = load_instances()
+
+    # Get live server list from Hetzner
+    result = subprocess.run(
+        ["hcloud", "server", "list", "--output", "json"],
+        capture_output=True,
+        text=True,
+    )
+
+    hetzner_servers = {}
+    if result.returncode == 0:
+        servers = json.loads(result.stdout)
+        for server in servers:
+            name = server.get("name", "")
+            if name.startswith("spawnm-tmp-"):
+                hetzner_servers[name] = {
+                    "ip": server.get("public_net", {}).get("ipv4", {}).get("ip"),
+                    "status": server.get("status"),
+                    "size": server.get("server_type", {}).get("name"),
+                }
+
+    # Merge: all servers from Hetzner + cached servers not in Hetzner
+    all_names = set(hetzner_servers.keys()) | set(cached.keys())
+
+    if not all_names:
+        print("No instances found.")
+        return
+
+    print(f"Instances ({len(all_names)}):")
+    for name in sorted(all_names):
+        if name in hetzner_servers:
+            info = hetzner_servers[name]
+            ip = info.get("ip", "unknown")
+            size = info.get("size", "unknown")
+            status = info.get("status", "unknown")
+            print(f"  {name}  {ip}  {status}  ({size})")
+        else:
+            # In cache but not in Hetzner (stale)
+            info = cached[name]
+            ip = info.get("ip", "unknown")
+            size = info.get("size", "unknown")
+            print(f"  {name}  {ip}  not found  ({size})")
+
+
 def cmd_destroy(args):
     check_hcloud_installed()
     instances = load_instances()
@@ -333,11 +379,13 @@ def main():
         epilog="""
 Commands:
     spawnm [create]  Create a new instance (default)
+    spawnm list      List tracked instances
     spawnm destroy   Destroy an instance
 
 Examples:
     spawnm --ssh --workdir
     spawnm create --name web-server --size cx33
+    spawnm list
     spawnm destroy my-server
     spawnm destroy --all
 """,
@@ -351,6 +399,9 @@ Examples:
     create_parser = subparsers.add_parser("create", help="Create a new instance")
     add_create_args(create_parser, default_name)
 
+    # List command
+    subparsers.add_parser("list", help="List tracked instances")
+
     # Destroy command
     destroy_parser = subparsers.add_parser("destroy", help="Destroy an instance")
     destroy_parser.add_argument("name", nargs="?", help="Server name to destroy")
@@ -360,7 +411,9 @@ Examples:
 
     args = parser.parse_args()
 
-    if args.command == "destroy":
+    if args.command == "list":
+        cmd_list(args)
+    elif args.command == "destroy":
         cmd_destroy(args)
     else:
         # Default to create (covers both explicit "create" and no command)
