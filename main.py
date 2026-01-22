@@ -203,6 +203,23 @@ def get_cache_dir():
     return cache_dir
 
 
+def uninstall():
+    # type: () -> None
+    """Uninstall spawnm by removing config and cache directories."""
+    config_dir = get_config_dir()
+    cache_dir = get_cache_dir()
+
+    if config_dir.exists():
+        shutil.rmtree(config_dir)
+        print(f"Removed config directory: {config_dir}")
+
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+        print(f"Removed cache directory: {cache_dir}")
+
+    print("spawnm uninstalled.")
+
+
 def get_instances_file():
     # type: () -> Path
     return get_cache_dir() / "instances.json"
@@ -578,6 +595,11 @@ def cmd_destroy(args):
     sys.exit(1)
 
 
+def cmd_uninstall(args):
+    # type: (Namespace) -> None
+    uninstall()
+
+
 def add_create_args(parser, default_name):
     # type: (ArgumentParser, str) -> None
     """Add create command arguments to a parser."""
@@ -656,6 +678,9 @@ Examples:
         "--all", action="store_true", help="Destroy all tracked instances"
     )
 
+    # Uninstal command
+    subparsers.add_parser("uninstall", help="Uninstall spawnm (remove settings)")
+
     args = parser.parse_args()
 
     check_hcloud_installed()
@@ -665,6 +690,8 @@ Examples:
         cmd_list(args)  # type: ignore
     elif args.command == "destroy":
         cmd_destroy(args)  # type: ignore
+    elif args.command == "uninstall":
+        cmd_uninstall(args)  # type: ignore
     else:
         # Default to create (covers both explicit "create" and no command)
         cmd_create(args)  # type: ignore
