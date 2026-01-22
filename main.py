@@ -38,6 +38,11 @@ class CmdArgsList:
     pass
 
 
+class Settings(TypedDict):
+    default_hetzner_ssh_key: str
+    ssh_keys: dict[str, str]  # name -> local path (e.g. ~/.ssh/id_hetzner)
+
+
 class InstanceInfo(TypedDict):
     name: str
     size: str
@@ -46,6 +51,132 @@ class InstanceInfo(TypedDict):
     ip: str
     root_password: str
     ssh_key: str | None
+
+
+def get_config_dir():
+    # type: () -> Path
+    """Get config directory using XDG_CONFIG_HOME or fall back to ~/.config"""
+    # See: https://specifications.freedesktop.org/basedir/latest/
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        base = Path(xdg_config)
+    else:
+        base = Path.home() / ".config"
+    config_dir = base / "spawnm"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
+
+
+def get_settings_file():
+    # type: () -> Path
+    return get_config_dir() / "settings.json"
+
+
+def load_settings():
+    # type: () -> Settings | None
+    settings_file = get_settings_file()
+    if settings_file.exists():
+        with open(settings_file) as f:
+            return json.load(f)
+    return None
+
+
+def save_settings(settings):
+    # type: (Settings) -> None
+    settings_file = get_settings_file()
+    with open(settings_file, "w") as f:
+        json.dump(settings, f, indent=2)
+
+
+def run_install():
+    # type: () -> Settings
+    """Run the initial install step to configure spawnm."""
+    print("Welcome to spawnm!")
+    print()
+    print("Before using spawnm, you need to configure your Hetzner SSH key.")
+
+    # Fetch SSH keys from Hetzner
+    result = subprocess.run(
+        ["hcloud", "ssh-key", "list", "--output", "json"],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        print("Error: Failed to fetch SSH keys from Hetzner.")
+        print("Make sure you're authenticated: hcloud context create <context-name>")
+        sys.exit(1)
+
+    ssh_keys = json.loads(result.stdout)
+
+    if not ssh_keys:
+        print("No SSH keys found in your Hetzner account.")
+        print(
+            "Please add an SSH key at: https://console.hetzner.cloud/ -> Security -> SSH Keys"
+        )
+        sys.exit(1)
+
+    # Display available keys
+    print("Available SSH keys in Hetzner:")
+    print()
+    for i, key in enumerate(ssh_keys, 1):
+        name = key.get("name", "unknown")
+        fingerprint = key.get("fingerprint", "")
+        print(f"  {i}. {name}")
+        print(f"     Fingerprint: {fingerprint}")
+    print()
+
+    # Let user select a key
+    while True:
+        choice = input(f"Select an SSH key [1-{len(ssh_keys)}]: ").strip()
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(ssh_keys):
+                break
+            print(f"Please enter a number between 1 and {len(ssh_keys)}")
+        except ValueError:
+            print("Please enter a valid number")
+
+    selected_key = ssh_keys[idx]
+    ssh_key_name = selected_key.get("name")
+
+    print()
+    print(f"Selected: {ssh_key_name}")
+    print()
+
+    # Ask for local key path
+    default_path = f"~/.ssh/id_{ssh_key_name.replace(' ', '_').lower()}"
+    local_path = input(f"Enter local SSH key path [{default_path}]: ").strip()
+    if not local_path:
+        local_path = default_path
+
+    # Verify the key exists
+    expanded_path = os.path.expanduser(local_path)
+    if not os.path.exists(expanded_path):
+        print(f"Warning: {local_path} does not exist")
+        confirm = input("Continue anyway? [y/N]: ").strip().lower()
+        if confirm != "y":
+            sys.exit(1)
+
+    settings = {
+        "default_hetzner_ssh_key": ssh_key_name,
+        "ssh_keys": {ssh_key_name: local_path},
+    }  # type: Settings
+    save_settings(settings)
+
+    print()
+    print(f"Settings saved to {get_settings_file()}")
+    print()
+    return settings
+
+
+def ensure_installed():
+    # type: () -> None
+    """Ensure spawnm is configured, running install if needed."""
+    settings = load_settings()
+    if settings is None:
+        settings = run_install()
+    return None
 
 
 def get_cache_dir():
@@ -138,7 +269,7 @@ def ensure_sshpass_installed():
         sys.exit(1)
 
 
-def base_ssh_cmd(ssh_key, password=None):
+def base_ssh_cmd(ssh_key_file, password=None):
     # type: (str, str | None) -> list[str]
     # sshpass_args = []
     sshkey_args = []
@@ -150,7 +281,7 @@ def base_ssh_cmd(ssh_key, password=None):
     #     ]
     sshkey_args = [
         "-i",
-        os.path.expanduser(ssh_key),
+        os.path.expanduser(ssh_key_file),
         "-o",
         "BatchMode=yes",
     ]
@@ -164,7 +295,7 @@ def base_ssh_cmd(ssh_key, password=None):
     ]
 
 
-def wait_for_ssh(ip, ssh_key, password, timeout=60):
+def wait_for_ssh(ip, ssh_key_file, password, timeout=60):
     # type: (str, str, str | None, int) -> bool
     """Wait for SSH to become available on the server."""
 
@@ -172,7 +303,7 @@ def wait_for_ssh(ip, ssh_key, password, timeout=60):
     while time.time() - start < timeout:
         result = subprocess.run(
             [
-                *base_ssh_cmd(ssh_key=ssh_key, password=password),
+                *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
                 "-o",
                 "ConnectTimeout=5",
                 f"root@{ip}",
@@ -186,7 +317,7 @@ def wait_for_ssh(ip, ssh_key, password, timeout=60):
     return False
 
 
-def sync_workdir(ip, ssh_key, password, workdir):
+def sync_workdir(ip, ssh_key_file, password, workdir):
     # type: (str, str, str | None, str) -> str | None
     """Sync local directory to remote server using rsync."""
     workdir_path = Path(workdir).resolve()
@@ -200,7 +331,7 @@ def sync_workdir(ip, ssh_key, password, workdir):
             "-avz",
             "--progress",
             "-e",
-            *base_ssh_cmd(ssh_key=ssh_key, password=password),
+            *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
             f"{workdir_path}/",
             f"root@{ip}:{remote_path}/",
         ]
@@ -214,11 +345,11 @@ def sync_workdir(ip, ssh_key, password, workdir):
         return None
 
 
-def ssh_into_server(ip, ssh_key, password, workdir=None):
+def ssh_into_server(ip, ssh_key_file, password, workdir=None):
     # type: (str, str, str | None, str | None) -> None
     """SSH into the server, replacing current process."""
     ssh_cmd = [
-        *base_ssh_cmd(ssh_key=ssh_key, password=password),
+        *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
         f"root@{ip}",
     ]
 
@@ -229,7 +360,9 @@ def ssh_into_server(ip, ssh_key, password, workdir=None):
     os.execvp(ssh_cmd[0], ssh_cmd)
 
 
-def create_server(name, size, image, location, ssh_key, do_ssh=False, workdir=None):
+def create_server(
+    name, size, image, location, ssh_key_name, do_ssh=False, workdir=None
+):
     # type: (str, str, str, str, str, bool, str | None) -> None
     cmd = [
         "hcloud",
@@ -247,16 +380,21 @@ def create_server(name, size, image, location, ssh_key, do_ssh=False, workdir=No
         "json",
     ]
 
-    if ssh_key:
-        cmd.extend(["--ssh-key", ssh_key])
+    if ssh_key_name:
+        cmd.extend(["--ssh-key", ssh_key_name])
+
+    # Look up local path for the SSH key
+    settings = load_settings() or {}  # type: Settings | dict[str, dict[str, str]]
+    ssh_keys_map = settings.get("ssh_keys", {})
+    local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
 
     print("Creating Hetzner VM...")
     print(f"  Name: {name}")
     print(f"  Type: {size}")
     print(f"  Image: {image}")
     print(f"  Location: {location}")
-    if ssh_key:
-        print(f"  SSH Key: {ssh_key}")
+    if ssh_key_name:
+        print(f"  SSH Key: {ssh_key_name}")
     print()
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -288,30 +426,35 @@ def create_server(name, size, image, location, ssh_key, do_ssh=False, workdir=No
             "location": location,
             "ip": ip,
             "root_password": root_password,
-            "ssh_key": ssh_key,
+            "ssh_key": ssh_key_name,
         },
     )
 
     if ip and (do_ssh or workdir):
         print("Waiting for SSH to become available...")
-        if not wait_for_ssh(ip, ssh_key=ssh_key, password=root_password):
+        if not wait_for_ssh(
+            ip, ssh_key_file=local_ssh_key_path, password=root_password
+        ):
             print("Warning: SSH not available after timeout, trying anyway...")
 
     remote_workdir = None
     if workdir:
         remote_workdir = sync_workdir(
-            ip, ssh_key=ssh_key, password=root_password, workdir=workdir
+            ip, ssh_key_file=local_ssh_key_path, password=root_password, workdir=workdir
         )
 
     if do_ssh:
         print()
         print("Connecting...")
         ssh_into_server(
-            ip, ssh_key=ssh_key, password=root_password, workdir=remote_workdir
+            ip,
+            ssh_key_file=local_ssh_key_path,
+            password=root_password,
+            workdir=remote_workdir,
         )
     else:
-        if ssh_key:
-            print(f"ssh -i <ssh_key> root@{ip}")
+        if local_ssh_key_path:
+            print(f"ssh -i {local_ssh_key_path} root@{ip}")
         # else:
         #     print(f"sshpass -p {root_password} ssh root@{ip}")
 
@@ -327,14 +470,15 @@ def destroy_server(name):
 
 def cmd_create(args):
     # type: (CmdArgsCreate) -> None
-    check_hcloud_installed()
+    settings = load_settings() or {}
+
     workdir = os.getcwd() if args.workdir else None
     create_server(
         name=args.name,
         size=args.size,
         image=args.image,
         location=args.location,
-        ssh_key=args.ssh_key,
+        ssh_key_name=args.ssh_key or settings.get("default_hetzner_ssh_key"),
         do_ssh=args.ssh,
         workdir=workdir,
     )
@@ -342,7 +486,6 @@ def cmd_create(args):
 
 def cmd_list(args):
     # type: (CmdArgsList) -> None
-    check_hcloud_installed()
     cached = load_instances()
 
     # Get live server list from Hetzner
@@ -389,7 +532,6 @@ def cmd_list(args):
 
 def cmd_destroy(args):
     # type: (CmdArgsDestroy) -> None
-    check_hcloud_installed()
     instances = load_instances()
 
     if args.all:
@@ -450,7 +592,7 @@ def add_create_args(parser, default_name):
     parser.add_argument(
         "--ssh-key",
         default=None,
-        help="SSH key name in Hetzner Cloud",
+        help="SSH key name in Hetzner Cloud (default: from settings)",
     )
     parser.add_argument(
         "--ssh",
@@ -505,6 +647,9 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    check_hcloud_installed()
+    ensure_installed()
 
     if args.command == "list":
         cmd_list(args)  # type: ignore
