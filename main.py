@@ -358,7 +358,7 @@ def sync_workdir(ip, ssh_key_file, password, workdir):
             "-avz",
             "--progress",
             "-e",
-            *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
+            " ".join(base_ssh_cmd(ssh_key_file=ssh_key_file, password=password)),
             f"{workdir_path}/",
             f"root@{ip}:{remote_path}/",
         ]
