@@ -72,20 +72,30 @@ def get_settings_file():
     return get_config_dir() / "settings.json"
 
 
+CACHED_SETTINGS = None
+
+
 def load_settings():
     # type: () -> Settings | None
+    global CACHED_SETTINGS
+    if CACHED_SETTINGS:
+        return CACHED_SETTINGS
+
     settings_file = get_settings_file()
     if settings_file.exists():
         with open(settings_file) as f:
-            return json.load(f)
+            CACHED_SETTINGS = json.load(f)
+            return CACHED_SETTINGS
     return None
 
 
 def save_settings(settings):
     # type: (Settings) -> None
+    global CACHED_SETTINGS
     settings_file = get_settings_file()
     with open(settings_file, "w") as f:
         json.dump(settings, f, indent=2)
+        CACHED_SETTINGS = settings
 
 
 def run_install():
