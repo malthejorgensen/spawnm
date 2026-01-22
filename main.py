@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import random
@@ -9,9 +10,46 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from argparse import ArgumentParser, Namespace  # noqa: F401
+
+
+@dataclass
+class CmdArgsCreate:
+    name: str
+    size: str
+    image: str
+    location: str
+    ssh_key: str | None
+    ssh: bool
+    workdir: bool
+
+
+@dataclass
+class CmdArgsDestroy:
+    name: str | None
+    all: bool
+
+
+@dataclass
+class CmdArgsList:
+    pass
+
+
+class InstanceInfo(TypedDict):
+    name: str
+    size: str
+    image: str
+    location: str
+    ip: str
+    root_password: str
+    ssh_key: str | None
 
 
 def get_cache_dir():
+    # type: () -> Path
     """Get cache directory using XDG_STATE_HOME or fall back to ~/.local/state"""
     # See: https://specifications.freedesktop.org/basedir/latest/
     xdg_cache = os.environ.get("XDG_STATE_HOME")
@@ -25,10 +63,12 @@ def get_cache_dir():
 
 
 def get_instances_file():
+    # type: () -> Path
     return get_cache_dir() / "instances.json"
 
 
 def load_instances():
+    # type: () -> dict[str, InstanceInfo]
     instances_file = get_instances_file()
     if instances_file.exists():
         with open(instances_file) as f:
@@ -37,18 +77,21 @@ def load_instances():
 
 
 def save_instances(instances):
+    # type: (dict[str, InstanceInfo]) -> None
     instances_file = get_instances_file()
     with open(instances_file, "w") as f:
         json.dump(instances, f, indent=2)
 
 
 def add_instance(name, info):
+    # type: (str, InstanceInfo) -> None
     instances = load_instances()
     instances[name] = info
     save_instances(instances)
 
 
 def remove_instance(name):
+    # type: (str) -> None
     instances = load_instances()
     if name in instances:
         del instances[name]
@@ -56,10 +99,12 @@ def remove_instance(name):
 
 
 def generate_random_suffix(length=4):
+    # type: (int) -> str
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 
 def check_hcloud_installed():
+    # type: () -> None
     if shutil.which("hcloud") is None:
         print("Error: hcloud CLI is not installed.")
         print(
@@ -69,6 +114,7 @@ def check_hcloud_installed():
 
 
 def check_hcloud_authenticated():
+    # type: () -> None
     result = subprocess.run(["hcloud", "server", "list"], capture_output=True)
     if result.returncode != 0:
         print("Error: Not authenticated with Hetzner Cloud.")
@@ -77,24 +123,58 @@ def check_hcloud_authenticated():
         sys.exit(1)
 
 
-SSH_KEY_PATH = "~/.ssh/id_hetzner"
+def is_sshpass_installed():
+    # type: () -> bool
+    return shutil.which("sshpass") is not None
 
 
-def wait_for_ssh(ip, timeout=60):
+def ensure_sshpass_installed():
+    # type: () -> None
+    if is_sshpass_installed():
+        print("Error: sshpass is not installed.")
+        print(
+            "Install it via: brew install sshpass (macOS) or apt install sshpass (Linux)"
+        )
+        sys.exit(1)
+
+
+def base_ssh_cmd(ssh_key, password=None):
+    # type: (str, str | None) -> list[str]
+    # sshpass_args = []
+    sshkey_args = []
+    # if password and is_sshpass_installed():
+    #     sshpass_args = [
+    #         "sshpass",
+    #         "-p",
+    #         password,
+    #     ]
+    sshkey_args = [
+        "-i",
+        os.path.expanduser(ssh_key),
+        "-o",
+        "BatchMode=yes",
+    ]
+
+    return [
+        # *sshpass_args,
+        "ssh",
+        *sshkey_args,
+        "-o",
+        "StrictHostKeyChecking=no",
+    ]
+
+
+def wait_for_ssh(ip, ssh_key, password, timeout=60):
+    # type: (str, str, str | None, int) -> bool
     """Wait for SSH to become available on the server."""
+
     start = time.time()
     while time.time() - start < timeout:
         result = subprocess.run(
             [
-                "ssh",
-                "-i",
-                os.path.expanduser(SSH_KEY_PATH),
-                "-o",
-                "StrictHostKeyChecking=no",
+                *base_ssh_cmd(ssh_key=ssh_key, password=password),
                 "-o",
                 "ConnectTimeout=5",
-                "-o",
-                "BatchMode=yes",
                 f"root@{ip}",
                 "true",
             ],
@@ -106,12 +186,13 @@ def wait_for_ssh(ip, timeout=60):
     return False
 
 
-def sync_workdir(ip, workdir):
+def sync_workdir(ip, ssh_key, password, workdir):
+    # type: (str, str, str | None, str) -> str | None
     """Sync local directory to remote server using rsync."""
-    workdir = Path(workdir).resolve()
-    remote_path = f"/root/{workdir.name}"
+    workdir_path = Path(workdir).resolve()
+    remote_path = f"/root/{workdir_path.name}"
 
-    print(f"Syncing {workdir} to {remote_path}...")
+    print(f"Syncing {workdir_path} to {remote_path}...")
 
     result = subprocess.run(
         [
@@ -119,8 +200,8 @@ def sync_workdir(ip, workdir):
             "-avz",
             "--progress",
             "-e",
-            f"ssh -i {os.path.expanduser(SSH_KEY_PATH)} -o StrictHostKeyChecking=no",
-            f"{workdir}/",
+            *base_ssh_cmd(ssh_key=ssh_key, password=password),
+            f"{workdir_path}/",
             f"root@{ip}:{remote_path}/",
         ]
     )
@@ -133,14 +214,11 @@ def sync_workdir(ip, workdir):
         return None
 
 
-def ssh_into_server(ip, workdir=None):
+def ssh_into_server(ip, ssh_key, password, workdir=None):
+    # type: (str, str, str | None, str | None) -> None
     """SSH into the server, replacing current process."""
     ssh_cmd = [
-        "ssh",
-        "-i",
-        os.path.expanduser(SSH_KEY_PATH),
-        "-o",
-        "StrictHostKeyChecking=no",
+        *base_ssh_cmd(ssh_key=ssh_key, password=password),
         f"root@{ip}",
     ]
 
@@ -148,10 +226,11 @@ def ssh_into_server(ip, workdir=None):
         # Start in the synced directory
         ssh_cmd.extend(["-t", f"cd {workdir} && exec $SHELL -l"])
 
-    os.execvp("ssh", ssh_cmd)
+    os.execvp(ssh_cmd[0], ssh_cmd)
 
 
 def create_server(name, size, image, location, ssh_key, do_ssh=False, workdir=None):
+    # type: (str, str, str, str, str, bool, str | None) -> None
     cmd = [
         "hcloud",
         "server",
@@ -164,6 +243,8 @@ def create_server(name, size, image, location, ssh_key, do_ssh=False, workdir=No
         image,
         "--location",
         location,
+        "--output",
+        "json",
     ]
 
     if ssh_key:
@@ -178,56 +259,65 @@ def create_server(name, size, image, location, ssh_key, do_ssh=False, workdir=No
         print(f"  SSH Key: {ssh_key}")
     print()
 
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
+        print(result.stderr)
         sys.exit(result.returncode)
 
-    print()
+    # Parse JSON output to get IP and root password
+    create_info = json.loads(result.stdout)
+    root_password = create_info.get("root_password")
+    server_info = create_info.get("server", {})
+    ip = server_info.get("public_net", {}).get("ipv4", {}).get("ip")
+
     print("Server created successfully!")
     print()
+    if ip:
+        print(f"  IP: {ip}")
+    if root_password:
+        print(f"  Root password: {root_password}")
+    print()
 
-    result = subprocess.run(
-        ["hcloud", "server", "describe", name, "--output", "json"],
-        capture_output=True,
-        text=True,
+    # Save instance to cache
+    add_instance(
+        name,
+        {
+            "name": name,
+            "size": size,
+            "image": image,
+            "location": location,
+            "ip": ip,
+            "root_password": root_password,
+            "ssh_key": ssh_key,
+        },
     )
-    ip = None
-    if result.returncode == 0:
-        server_info = json.loads(result.stdout)
-        ip = server_info.get("public_net", {}).get("ipv4", {}).get("ip")
-        if ip:
-            print(f"ssh -i {SSH_KEY_PATH} root@{ip}")
-
-        # Save instance to cache
-        add_instance(
-            name,
-            {
-                "name": name,
-                "size": size,
-                "image": image,
-                "location": location,
-                "ssh_key": ssh_key,
-                "ip": ip,
-            },
-        )
 
     if ip and (do_ssh or workdir):
-        print()
         print("Waiting for SSH to become available...")
-        if not wait_for_ssh(ip):
+        if not wait_for_ssh(ip, ssh_key=ssh_key, password=root_password):
             print("Warning: SSH not available after timeout, trying anyway...")
 
-        remote_workdir = None
-        if workdir:
-            remote_workdir = sync_workdir(ip, workdir)
+    remote_workdir = None
+    if workdir:
+        remote_workdir = sync_workdir(
+            ip, ssh_key=ssh_key, password=root_password, workdir=workdir
+        )
 
-        if do_ssh:
-            print()
-            print("Connecting...")
-            ssh_into_server(ip, remote_workdir)
+    if do_ssh:
+        print()
+        print("Connecting...")
+        ssh_into_server(
+            ip, ssh_key=ssh_key, password=root_password, workdir=remote_workdir
+        )
+    else:
+        if ssh_key:
+            print(f"ssh -i <ssh_key> root@{ip}")
+        # else:
+        #     print(f"sshpass -p {root_password} ssh root@{ip}")
 
 
 def destroy_server(name):
+    # type: (str) -> int
     result = subprocess.run(["hcloud", "server", "delete", name])
     if result.returncode == 0:
         print(f"Server '{name}' destroyed.")
@@ -236,20 +326,22 @@ def destroy_server(name):
 
 
 def cmd_create(args):
+    # type: (CmdArgsCreate) -> None
     check_hcloud_installed()
     workdir = os.getcwd() if args.workdir else None
     create_server(
-        args.name,
-        args.size,
-        args.image,
-        args.location,
-        args.ssh_key,
+        name=args.name,
+        size=args.size,
+        image=args.image,
+        location=args.location,
+        ssh_key=args.ssh_key,
         do_ssh=args.ssh,
         workdir=workdir,
     )
 
 
 def cmd_list(args):
+    # type: (CmdArgsList) -> None
     check_hcloud_installed()
     cached = load_instances()
 
@@ -296,6 +388,7 @@ def cmd_list(args):
 
 
 def cmd_destroy(args):
+    # type: (CmdArgsDestroy) -> None
     check_hcloud_installed()
     instances = load_instances()
 
@@ -334,6 +427,7 @@ def cmd_destroy(args):
 
 
 def add_create_args(parser, default_name):
+    # type: (ArgumentParser, str) -> None
     """Add create command arguments to a parser."""
     parser.add_argument(
         "--name",
@@ -355,7 +449,7 @@ def add_create_args(parser, default_name):
     )
     parser.add_argument(
         "--ssh-key",
-        default="id_hetzner_macbook_air",
+        default=None,
         help="SSH key name in Hetzner Cloud",
     )
     parser.add_argument(
@@ -371,6 +465,7 @@ def add_create_args(parser, default_name):
 
 
 def main():
+    # type: () -> None
     default_name = f"spawnm-tmp-{generate_random_suffix()}"
 
     parser = argparse.ArgumentParser(
@@ -412,12 +507,12 @@ Examples:
     args = parser.parse_args()
 
     if args.command == "list":
-        cmd_list(args)
+        cmd_list(args)  # type: ignore
     elif args.command == "destroy":
-        cmd_destroy(args)
+        cmd_destroy(args)  # type: ignore
     else:
         # Default to create (covers both explicit "create" and no command)
-        cmd_create(args)
+        cmd_create(args)  # type: ignore
 
 
 if __name__ == "__main__":
