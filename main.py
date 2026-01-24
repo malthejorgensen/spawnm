@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 import argparse
-from dataclasses import dataclass
 import json
 import os
 import random
 import shutil
 import string
 import subprocess
-import tempfile
 import sys
+import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
@@ -39,6 +39,13 @@ class CmdArgsDestroy:
 @dataclass
 class CmdArgsList:
     pass
+
+
+@dataclass
+class CmdArgsDebugConf:
+    name: str
+    conf: str | None
+    no_conf: bool
 
 
 class Settings(TypedDict, total=False):
@@ -733,6 +740,46 @@ def cmd_uninstall(args):
     uninstall()
 
 
+def cmd_debug_conf(args):
+    # type: (CmdArgsDebugConf) -> None
+    """Sync config files to an existing server."""
+    settings = load_settings() or {}
+    instances = load_instances()
+
+    if args.name not in instances:
+        print(f"Error: Instance '{args.name}' not found in cache.")
+        print("Use 'spawnm list' to see tracked instances.")
+        sys.exit(1)
+
+    instance = instances[args.name]
+    ip = instance.get("ip")
+    ssh_key_name = instance.get("ssh_key")
+    root_password = instance.get("root_password")
+
+    if not ip:
+        print(f"Error: No IP found for instance '{args.name}'")
+        sys.exit(1)
+
+    # Look up local SSH key path
+    ssh_keys_map = settings.get("ssh_keys", {})
+    local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
+
+    # Determine which configs to sync
+    conf = None
+    if not args.no_conf:
+        if args.conf:
+            conf = [app.strip() for app in args.conf.split(",") if app.strip()]
+        elif settings.get("conf"):
+            conf = settings["conf"]
+
+    if not conf:
+        print("No configs specified. Use --conf or set 'conf' in settings.json")
+        sys.exit(1)
+
+    print(f"Syncing configs to {args.name} ({ip})...")
+    sync_config(ip, ssh_key_file=local_ssh_key_path, password=root_password, apps=conf)
+
+
 def add_create_args(parser, default_name):
     # type: (ArgumentParser, str) -> None
     """Add create command arguments to a parser."""
@@ -828,6 +875,28 @@ Examples:
     # Uninstal command
     subparsers.add_parser("uninstall", help="Uninstall spawnm (remove settings)")
 
+    # Debug command with subcommands
+    debug_parser = subparsers.add_parser("debug", help="Debug commands")
+    debug_subparsers = debug_parser.add_subparsers(dest="debug_command")
+
+    # debug conf <name>
+    debug_conf_parser = debug_subparsers.add_parser(
+        "conf", help="Sync config files to an existing server"
+    )
+    debug_conf_parser.add_argument("name", help="Server name to sync configs to")
+    debug_conf_parser.add_argument(
+        "--conf",
+        default=None,
+        help="Config apps to sync (comma-separated). "
+        f"Supported: {', '.join(CONFIG_LOCATIONS.keys())}",
+    )
+    debug_conf_parser.add_argument(
+        "--no-conf",
+        action="store_true",
+        dest="no_conf",
+        help="Disable default config syncing",
+    )
+
     args = parser.parse_args()
 
     check_hcloud_installed()
@@ -839,6 +908,11 @@ Examples:
         cmd_destroy(args)  # type: ignore
     elif args.command == "uninstall":
         cmd_uninstall(args)  # type: ignore
+    elif args.command == "debug":
+        if args.debug_command == "conf":
+            cmd_debug_conf(args)  # type: ignore
+        else:
+            debug_parser.print_help()
     else:
         # Default to create (covers both explicit "create" and no command)
         cmd_create(args)  # type: ignore
