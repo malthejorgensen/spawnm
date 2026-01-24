@@ -22,6 +22,38 @@ DEFAULT_SIZE = "cx23"
 DEFAULT_IMAGE = "ubuntu-24.04"
 DEFAULT_LOCATION = "fsn1"
 
+# Global verbosity level, set by counting -v flags
+VERBOSITY = 0
+
+
+def print_verbose(msg, level=1):
+    # type: (str, int) -> None
+    """Print message if verbosity level is high enough."""
+    if VERBOSITY >= level:
+        print(msg)
+
+
+def _format_cmd(cmd):
+    # type: (list[str]) -> str
+    """Format command for display, quoting args with spaces."""
+    return " ".join(f'"{arg}"' if " " in arg else arg for arg in cmd)
+
+
+def run_subprocess(cmd, **kwargs):
+    # type: (list[str], ...) -> subprocess.CompletedProcess
+    """Wrapper around subprocess.run that prints command when VERBOSITY >= 2."""
+    if VERBOSITY >= 2:
+        print(f"+ {_format_cmd(cmd)}")
+    return subprocess.run(cmd, **kwargs)
+
+
+def popen_subprocess(cmd, **kwargs):
+    # type: (list[str], ...) -> subprocess.Popen
+    """Wrapper around subprocess.Popen that prints command when VERBOSITY >= 2."""
+    if VERBOSITY >= 2:
+        print(f"+ {_format_cmd(cmd)}")
+    return subprocess.Popen(cmd, **kwargs)
+
 
 def generate_default_name():
     return f"spawnm-tmp-{generate_random_suffix()}"
@@ -193,7 +225,7 @@ def run_install():
     print("Before using spawnm, you need to configure your Hetzner SSH key.")
 
     # Fetch SSH keys from Hetzner
-    result = subprocess.run(
+    result = run_subprocess(
         ["hcloud", "ssh-key", "list", "--output", "json"],
         capture_output=True,
         text=True,
@@ -411,7 +443,7 @@ def check_hcloud_installed():
 
 def check_hcloud_authenticated():
     # type: () -> None
-    result = subprocess.run(["hcloud", "server", "list"], capture_output=True)
+    result = run_subprocess(["hcloud", "server", "list"], capture_output=True)
     if result.returncode != 0:
         print("Error: Not authenticated with Hetzner Cloud.")
         print("Run: hcloud context create <context-name>")
@@ -467,7 +499,7 @@ def wait_for_ssh(host, ssh_key_file, use_password, timeout=60):
 
     start = time.time()
     while time.time() - start < timeout:
-        result = subprocess.run(
+        result = run_subprocess(
             [
                 *base_ssh_cmd(ssh_key_file=ssh_key_file, use_password=use_password),
                 "-o",
@@ -491,7 +523,7 @@ def sync_workdir(host, ssh_key_file, use_password, workdir):
 
     print(f"Syncing {workdir_path} to {remote_path}...")
 
-    result = subprocess.run(
+    result = run_subprocess(
         [
             "rsync",
             "-avz",
@@ -571,11 +603,11 @@ def sync_config(host, ssh_key_file, use_password, apps):
 
         # Tar and pipe over SSH to extract at /root
         print("Transferring configs...")
-        tar_cmd = subprocess.Popen(
+        tar_cmd = popen_subprocess(
             ["tar", "-cf", "-", "-C", tmpdir, "."],
             stdout=subprocess.PIPE,
         )
-        ssh_cmd = subprocess.Popen(
+        ssh_cmd = popen_subprocess(
             [
                 *base_ssh_cmd(ssh_key_file=ssh_key_file, use_password=use_password),
                 f"root@{host}",
@@ -666,7 +698,7 @@ def create_server(
         print(f"  SSH Key: {ssh_key_name}")
     print()
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = run_subprocess(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(result.stderr)
         sys.exit(result.returncode)
@@ -764,7 +796,7 @@ def ssh_setup_and_connect(
 
 def destroy_server(name):
     # type: (str) -> int
-    result = subprocess.run(["hcloud", "server", "delete", name])
+    result = run_subprocess(["hcloud", "server", "delete", name])
     if result.returncode == 0:
         print(f"Server '{name}' destroyed.")
         remove_instance(name)
@@ -906,7 +938,7 @@ def cmd_list(args):
     cached = load_instances()
 
     # Get live server list from Hetzner
-    result = subprocess.run(
+    result = run_subprocess(
         ["hcloud", "server", "list", "--output", "json"],
         capture_output=True,
         text=True,
@@ -1121,6 +1153,13 @@ Examples:
     spawnm destroy --all
 """,
     )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase verbosity (use -vv for command tracing)",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     # No command is passed (default)
@@ -1179,6 +1218,9 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    global VERBOSITY
+    VERBOSITY = args.verbose
 
     check_hcloud_installed()
     ensure_installed()
