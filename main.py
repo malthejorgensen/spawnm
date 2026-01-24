@@ -535,7 +535,7 @@ def sync_config(host, ssh_key_file, password, apps):
             [
                 *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
                 f"root@{host}",
-                "tar -xf - -C /root",
+                "tar -xf - -C /root --warning=no-unknown-keyword",
             ],
             stdin=tar_cmd.stdout,
         )
