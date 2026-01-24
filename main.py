@@ -7,6 +7,7 @@ import random
 import shutil
 import string
 import subprocess
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -409,7 +410,9 @@ def sync_workdir(ip, ssh_key_file, password, workdir):
 
 def sync_config(ip, ssh_key_file, password, apps):
     # type: (str, str, str | None, list[str]) -> None
-    """Sync config files for specified apps to remote server."""
+    """Sync config files for specified apps to remote server using a single tar transfer."""
+    # Collect all configs to sync
+    configs = []  # list of (app, local_path, remote_path)
     for app in apps:
         app = app.strip().lower()
         if app not in CONFIG_LOCATIONS:
@@ -435,56 +438,53 @@ def sync_config(ip, ssh_key_file, password, apps):
             print(f"  Looked in: {', '.join(looked_in)}")
             continue
 
-        local_path_obj = Path(local_path)
-        is_dir = local_path_obj.is_dir()
+        configs.append((app, local_path, remote_path))
 
-        print(f"Syncing {app} config: {local_path} -> {remote_path}")
+    if not configs:
+        return
 
-        # Create parent directory on remote
-        parent_dir = str(Path(remote_path).parent)
-        subprocess.run(
+    # Create a temp directory with the target structure (relative to /root)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+
+        for app, local_path, remote_path in configs:
+            # remote_path is like /root/.config/git or /root/.gitconfig
+            # We want the path relative to /root
+            rel_path = remote_path.removeprefix("/root/")
+            target = tmpdir_path / rel_path
+
+            local_path_obj = Path(local_path)
+            print(f"  {app}: {local_path} -> {remote_path}")
+
+            if local_path_obj.is_dir():
+                # Copy directory contents
+                shutil.copytree(local_path, target)
+            else:
+                # Copy file
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(local_path, target)
+
+        # Tar and pipe over SSH to extract at /root
+        print("Transferring configs...")
+        tar_cmd = subprocess.Popen(
+            ["tar", "-cf", "-", "-C", tmpdir, "."],
+            stdout=subprocess.PIPE,
+        )
+        ssh_cmd = subprocess.Popen(
             [
                 *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
                 f"root@{ip}",
-                f"mkdir -p {parent_dir}",
+                "tar -xf - -C /root",
             ],
-            capture_output=True,
+            stdin=tar_cmd.stdout,
         )
+        tar_cmd.stdout.close()
+        ssh_cmd.wait()
 
-        # Rsync the config
-        if is_dir:
-            # For directories, sync contents into remote path
-            result = subprocess.run(
-                [
-                    "rsync",
-                    "-avz",
-                    "-e",
-                    " ".join(
-                        base_ssh_cmd(ssh_key_file=ssh_key_file, password=password)
-                    ),
-                    f"{local_path}/",
-                    f"root@{ip}:{remote_path}/",
-                ]
-            )
+        if ssh_cmd.returncode == 0:
+            print("  Synced all configs")
         else:
-            # For files (like ~/.gitconfig or ~/.tmux.conf), copy to remote path
-            result = subprocess.run(
-                [
-                    "rsync",
-                    "-avz",
-                    "-e",
-                    " ".join(
-                        base_ssh_cmd(ssh_key_file=ssh_key_file, password=password)
-                    ),
-                    local_path,
-                    f"root@{ip}:{remote_path}",
-                ]
-            )
-
-        if result.returncode == 0:
-            print(f"  Synced {app} config")
-        else:
-            print(f"  Warning: Failed to sync {app} config")
+            print("  Warning: Failed to sync configs")
 
 
 def ssh_into_server(ip, ssh_key_file, password, workdir=None):
