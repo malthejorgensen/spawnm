@@ -61,6 +61,7 @@ class InstanceInfo(TypedDict):
     image: str
     location: str
     ip: str
+    dns_ptr: str | None
     root_password: str
     ssh_key: str | None
     created_at: str | None
@@ -418,7 +419,7 @@ def base_ssh_cmd(ssh_key_file, password=None):
     ]
 
 
-def wait_for_ssh(ip, ssh_key_file, password, timeout=60):
+def wait_for_ssh(host, ssh_key_file, password, timeout=60):
     # type: (str, str, str | None, int) -> bool
     """Wait for SSH to become available on the server."""
 
@@ -429,7 +430,7 @@ def wait_for_ssh(ip, ssh_key_file, password, timeout=60):
                 *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
                 "-o",
                 "ConnectTimeout=5",
-                f"root@{ip}",
+                f"root@{host}",
                 "true",
             ],
             capture_output=True,
@@ -440,7 +441,7 @@ def wait_for_ssh(ip, ssh_key_file, password, timeout=60):
     return False
 
 
-def sync_workdir(ip, ssh_key_file, password, workdir):
+def sync_workdir(host, ssh_key_file, password, workdir):
     # type: (str, str, str | None, str) -> str | None
     """Sync local directory to remote server using rsync."""
     workdir_path = Path(workdir).resolve()
@@ -456,7 +457,7 @@ def sync_workdir(ip, ssh_key_file, password, workdir):
             "-e",
             " ".join(base_ssh_cmd(ssh_key_file=ssh_key_file, password=password)),
             f"{workdir_path}/",
-            f"root@{ip}:{remote_path}/",
+            f"root@{host}:{remote_path}/",
         ]
     )
 
@@ -468,7 +469,7 @@ def sync_workdir(ip, ssh_key_file, password, workdir):
         return None
 
 
-def sync_config(ip, ssh_key_file, password, apps):
+def sync_config(host, ssh_key_file, password, apps):
     # type: (str, str, str | None, list[str]) -> None
     """Sync config files for specified apps to remote server using a single tar transfer."""
     # Collect all configs to sync
@@ -533,7 +534,7 @@ def sync_config(ip, ssh_key_file, password, apps):
         ssh_cmd = subprocess.Popen(
             [
                 *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
-                f"root@{ip}",
+                f"root@{host}",
                 "tar -xf - -C /root",
             ],
             stdin=tar_cmd.stdout,
@@ -547,12 +548,12 @@ def sync_config(ip, ssh_key_file, password, apps):
             print("  Warning: Failed to sync configs")
 
 
-def ssh_into_server(ip, ssh_key_file, password, workdir=None):
+def ssh_into_server(host, ssh_key_file, password, workdir=None):
     # type: (str, str, str | None, str | None) -> None
     """SSH into the server, replacing current process."""
     ssh_cmd = [
         *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
-        f"root@{ip}",
+        f"root@{host}",
     ]
 
     if workdir:
@@ -604,14 +605,21 @@ def create_server(
         print(result.stderr)
         sys.exit(result.returncode)
 
-    # Parse JSON output to get IP and root password
+    # Parse JSON output to get IP, DNS, and root password
     create_info = json.loads(result.stdout)
     root_password = create_info.get("root_password")
     server_info = create_info.get("server", {})
-    ip = server_info.get("public_net", {}).get("ipv4", {}).get("ip")
+    ipv4_info = server_info.get("public_net", {}).get("ipv4", {})
+    ip = ipv4_info.get("ip")
+    dns_ptr = ipv4_info.get("dns_ptr")
+
+    # Use DNS hostname if available, otherwise fall back to IP
+    host = dns_ptr or ip
 
     print("Server created successfully!")
     print()
+    if dns_ptr:
+        print(f"  Hostname: {dns_ptr}")
     if ip:
         print(f"  IP: {ip}")
     if root_password:
@@ -627,44 +635,48 @@ def create_server(
             "image": image,
             "location": location,
             "ip": ip,
+            "dns_ptr": dns_ptr,
             "root_password": root_password,
             "ssh_key": ssh_key_name,
             "created_at": datetime.now().isoformat(),
         },
     )
 
-    if ip and (do_ssh or workdir or conf):
+    if host and (do_ssh or workdir or conf):
         print("Waiting for SSH to become available...")
         if not wait_for_ssh(
-            ip, ssh_key_file=local_ssh_key_path, password=root_password
+            host, ssh_key_file=local_ssh_key_path, password=root_password
         ):
             print("Warning: SSH not available after timeout, trying anyway...")
 
     remote_workdir = None
     if workdir:
         remote_workdir = sync_workdir(
-            ip, ssh_key_file=local_ssh_key_path, password=root_password, workdir=workdir
+            host,
+            ssh_key_file=local_ssh_key_path,
+            password=root_password,
+            workdir=workdir,
         )
 
     if conf:
         sync_config(
-            ip, ssh_key_file=local_ssh_key_path, password=root_password, apps=conf
+            host, ssh_key_file=local_ssh_key_path, password=root_password, apps=conf
         )
 
     if do_ssh:
         print()
         print("Connecting...")
         ssh_into_server(
-            ip,
+            host,
             ssh_key_file=local_ssh_key_path,
             password=root_password,
             workdir=remote_workdir,
         )
     else:
         if local_ssh_key_path:
-            print(f"ssh -i {local_ssh_key_path} root@{ip}")
+            print(f"ssh -i {local_ssh_key_path} root@{host}")
         # else:
-        #     print(f"sshpass -p {root_password} ssh root@{ip}")
+        #     print(f"sshpass -p {root_password} ssh root@{host}")
 
 
 def destroy_server(name):
@@ -722,8 +734,10 @@ def cmd_list(args):
         for server in servers:
             name = server.get("name", "")
             if name.startswith("spawnm-tmp-"):
+                ipv4_info = server.get("public_net", {}).get("ipv4", {})
                 hetzner_servers[name] = {
-                    "ip": server.get("public_net", {}).get("ipv4", {}).get("ip"),
+                    "ip": ipv4_info.get("ip"),
+                    "dns_ptr": ipv4_info.get("dns_ptr"),
                     "status": server.get("status"),
                     "size": server.get("server_type", {}).get("name"),
                 }
@@ -742,18 +756,24 @@ def cmd_list(args):
         created_at = cached_info.get("created_at")
         created_str = format_relative_time(created_at)
         created_display = f"  {created_str}" if created_str else ""
+
         if name in hetzner_servers:
             info = hetzner_servers[name]
-            ip = info.get("ip", "unknown")
+            # Prefer dns_ptr from live data, fall back to cache, then IP
+            host = (
+                info.get("dns_ptr")
+                or cached_info.get("dns_ptr")
+                or info.get("ip", "unknown")
+            )
             size = info.get("size", "unknown")
             status = info.get("status", "unknown")
-            print(f"  {name}  {ip}  {status}  ({size}){created_display}")
+            print(f"  {name}  {host}  {status}  ({size}){created_display}")
         else:
             # In cache but not in Hetzner (stale)
-            info = cached[name]
-            ip = info.get("ip", "unknown")
+            info = cached_info
+            host = info.get("dns_ptr") or info.get("ip", "unknown")
             size = info.get("size", "unknown")
-            print(f"  {name}  {ip}  not found  ({size}){created_display}")
+            print(f"  {name}  {host}  not found  ({size}){created_display}")
 
 
 def cmd_destroy(args):
@@ -811,12 +831,12 @@ def cmd_debug_conf(args):
         sys.exit(1)
 
     instance = instances[args.name]
-    ip = instance.get("ip")
+    host = instance.get("dns_ptr")
     ssh_key_name = instance.get("ssh_key")
     root_password = instance.get("root_password")
 
-    if not ip:
-        print(f"Error: No IP found for instance '{args.name}'")
+    if not host:
+        print(f"Error: No hostname found for instance '{args.name}'")
         sys.exit(1)
 
     # Look up local SSH key path
@@ -835,8 +855,8 @@ def cmd_debug_conf(args):
         print("No configs specified. Use --conf or set 'conf' in settings.json")
         sys.exit(1)
 
-    print(f"Syncing configs to {args.name} ({ip})...")
-    sync_config(ip, ssh_key_file=local_ssh_key_path, password=root_password, apps=conf)
+    print(f"Syncing configs to {args.name} ({host})...")
+    sync_config(host, ssh_key_file=local_ssh_key_path, password=root_password, apps=conf)
 
 
 def add_create_args(parser, default_name):
