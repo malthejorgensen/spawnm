@@ -434,25 +434,26 @@ def ensure_sshpass_installed():
         sys.exit(1)
 
 
-def base_ssh_cmd(ssh_key_file, password=None):
+def base_ssh_cmd(ssh_key_file, use_password=None):
     # type: (str, str | None) -> list[str]
-    # sshpass_args = []
+    sshpass_args = []
     sshkey_args = []
-    # if password and is_sshpass_installed():
-    #     sshpass_args = [
-    #         "sshpass",
-    #         "-p",
-    #         password,
-    #     ]
-    sshkey_args = [
-        "-i",
-        os.path.expanduser(ssh_key_file),
-        "-o",
-        "BatchMode=yes",
-    ]
+    if use_password and is_sshpass_installed():
+        sshpass_args = [
+            "sshpass",
+            "-p",
+            use_password,
+        ]
+    else:
+        sshkey_args = [
+            "-i",
+            os.path.expanduser(ssh_key_file),
+            "-o",
+            "BatchMode=yes",
+        ]
 
     return [
-        # *sshpass_args,
+        *sshpass_args,
         "ssh",
         *sshkey_args,
         "-o",
@@ -460,7 +461,7 @@ def base_ssh_cmd(ssh_key_file, password=None):
     ]
 
 
-def wait_for_ssh(host, ssh_key_file, password, timeout=60):
+def wait_for_ssh(host, ssh_key_file, use_password, timeout=60):
     # type: (str, str, str | None, int) -> bool
     """Wait for SSH to become available on the server."""
 
@@ -468,7 +469,7 @@ def wait_for_ssh(host, ssh_key_file, password, timeout=60):
     while time.time() - start < timeout:
         result = subprocess.run(
             [
-                *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
+                *base_ssh_cmd(ssh_key_file=ssh_key_file, use_password=use_password),
                 "-o",
                 "ConnectTimeout=5",
                 f"root@{host}",
@@ -482,7 +483,7 @@ def wait_for_ssh(host, ssh_key_file, password, timeout=60):
     return False
 
 
-def sync_workdir(host, ssh_key_file, password, workdir):
+def sync_workdir(host, ssh_key_file, use_password, workdir):
     # type: (str, str, str | None, str) -> str | None
     """Sync local directory to remote server using rsync."""
     workdir_path = Path(workdir).resolve()
@@ -496,7 +497,9 @@ def sync_workdir(host, ssh_key_file, password, workdir):
             "-avz",
             "--progress",
             "-e",
-            " ".join(base_ssh_cmd(ssh_key_file=ssh_key_file, password=password)),
+            " ".join(
+                base_ssh_cmd(ssh_key_file=ssh_key_file, use_password=use_password)
+            ),
             f"{workdir_path}/",
             f"root@{host}:{remote_path}/",
         ]
@@ -510,7 +513,7 @@ def sync_workdir(host, ssh_key_file, password, workdir):
         return None
 
 
-def sync_config(host, ssh_key_file, password, apps):
+def sync_config(host, ssh_key_file, use_password, apps):
     # type: (str, str, str | None, list[str]) -> None
     """Sync config files for specified apps to remote server using a single tar transfer."""
     # Collect all configs to sync
@@ -574,7 +577,7 @@ def sync_config(host, ssh_key_file, password, apps):
         )
         ssh_cmd = subprocess.Popen(
             [
-                *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
+                *base_ssh_cmd(ssh_key_file=ssh_key_file, use_password=use_password),
                 f"root@{host}",
                 "tar -xf - -C /root --warning=no-unknown-keyword",
             ],
@@ -589,11 +592,11 @@ def sync_config(host, ssh_key_file, password, apps):
             print("  Warning: Failed to sync configs")
 
 
-def ssh_into_server(host, ssh_key_file, password, workdir=None):
+def ssh_into_server(host, ssh_key_file, use_password, workdir=None):
     # type: (str, str, str | None, str | None) -> None
     """SSH into the server, replacing current process."""
     ssh_cmd = [
-        *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
+        *base_ssh_cmd(ssh_key_file=ssh_key_file, use_password=use_password),
         f"root@{host}",
     ]
 
@@ -623,9 +626,17 @@ def find_instance_for_current_dir():
 
 
 def create_server(
-    name, size, image, location, ssh_key_name, do_ssh=False, workdir=None, conf=None
+    name,
+    size,
+    image,
+    location,
+    ssh_key_name,
+    do_ssh=False,
+    workdir=None,
+    conf=None,
+    usepass=False,
 ):
-    # type: (str, str, str, str, str, bool, str | None, list[str] | None) -> None
+    # type: (str, str, str, str, str, bool, str | None, list[str] | None, bool) -> None
 
     cmd = [
         "hcloud",
@@ -703,20 +714,22 @@ def create_server(
     ssh_keys_map = settings.get("ssh_keys", {})
     local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
 
+    use_password = None
+    if usepass:
+        use_password = root_password
+
     if host and (do_ssh or workdir or conf):
         print("Waiting for SSH to become available...")
         if not wait_for_ssh(
-            host, ssh_key_file=local_ssh_key_path, password=root_password
+            host, ssh_key_file=local_ssh_key_path, use_password=use_password
         ):
             print("Warning: SSH not available after timeout, trying anyway...")
 
-    ssh_setup_and_connect(
-        host, local_ssh_key_path, root_password, do_ssh, workdir, conf
-    )
+    ssh_setup_and_connect(host, local_ssh_key_path, use_password, do_ssh, workdir, conf)
 
 
 def ssh_setup_and_connect(
-    host, local_ssh_key_path, root_password, do_ssh, workdir, conf
+    host, local_ssh_key_path, use_password, do_ssh, workdir, conf
 ):
     # type: (str, str, str | None, bool, str | None, list[str] | None) -> None
     remote_workdir = None
@@ -724,13 +737,13 @@ def ssh_setup_and_connect(
         remote_workdir = sync_workdir(
             host,
             ssh_key_file=local_ssh_key_path,
-            password=root_password,
+            use_password=use_password,
             workdir=workdir,
         )
 
     if conf:
         sync_config(
-            host, ssh_key_file=local_ssh_key_path, password=root_password, apps=conf
+            host, ssh_key_file=local_ssh_key_path, use_password=use_password, apps=conf
         )
 
     if do_ssh:
@@ -739,7 +752,7 @@ def ssh_setup_and_connect(
         ssh_into_server(
             host,
             ssh_key_file=local_ssh_key_path,
-            password=root_password,
+            use_password=use_password,
             workdir=remote_workdir,
         )
     else:
@@ -775,6 +788,9 @@ def cmd_create(args):
         elif settings.get("conf"):
             conf = settings["conf"]
 
+    if args.usepass:
+        ensure_sshpass_installed()
+
     create_server(
         name=args.name,
         size=args.size,
@@ -784,6 +800,7 @@ def cmd_create(args):
         do_ssh=args.ssh,
         workdir=workdir,
         conf=conf,
+        usepass=args.usepass,
     )
 
 
@@ -823,6 +840,7 @@ def cmd_default(args):
         do_ssh=args.ssh,
         workdir=workdir,
         conf=conf,
+        usepass=args.usepass,
     )
 
 
@@ -860,7 +878,15 @@ def cmd_ssh(args):
     # Connect
     host = existing.get("dns_ptr") or existing.get("ip")
     ssh_key_name = existing.get("ssh_key")
-    root_password = existing.get("root_password")
+    use_password = None
+    if args.usepass:
+        ensure_sshpass_installed()
+        use_password = existing.get("root_password")
+        if ssh_key_name and not use_password:
+            print(
+                "--usepass: Server was created with SSH key, so no root password is set."
+            )
+            exit(1)
 
     ssh_keys_map = settings.get("ssh_keys", {})
     local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
@@ -868,7 +894,7 @@ def cmd_ssh(args):
     ssh_setup_and_connect(
         host=host,
         local_ssh_key_path=local_ssh_key_path,
-        root_password=root_password,
+        use_password=use_password,
         do_ssh=True,
         workdir=workdir,
         conf=conf,
@@ -1014,7 +1040,7 @@ def cmd_debug_conf(args):
         sys.exit(1)
 
     print(f"Syncing configs to {args.name} ({host})...")
-    sync_config(host, ssh_key_file=local_ssh_key_path, password=root_password, apps=conf)
+    sync_config(host, ssh_key_file=local_ssh_key_path, use_password=None, apps=conf)
 
 
 def add_create_args(parser, default_name):
@@ -1065,6 +1091,11 @@ def add_connect_args(parser):
         action="store_true",
         dest="no_conf",
         help="Disable config file syncing (overrides default_conf in settings)",
+    )
+    parser.add_argument(
+        "--usepass",
+        action="store_true",
+        help="Use `sshpass` to connect using root password instead off SSH key",
     )
 
 
