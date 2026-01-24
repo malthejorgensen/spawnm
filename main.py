@@ -65,6 +65,7 @@ class InstanceInfo(TypedDict):
     root_password: str
     ssh_key: str | None
     created_at: str | None
+    spawn_dir: str | None
 
 
 # Config locations for --conf option
@@ -639,6 +640,7 @@ def create_server(
             "root_password": root_password,
             "ssh_key": ssh_key_name,
             "created_at": datetime.now().isoformat(),
+            "spawn_dir": os.getcwd(),
         },
     )
 
