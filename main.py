@@ -58,20 +58,34 @@ class InstanceInfo(TypedDict):
 # Config locations for --conf option
 # Each entry maps app name to (local_paths, remote_path)
 # local_paths are tried in order, first existing one is used
+# Paths starting with $XDG_CONFIG/ use XDG_CONFIG_HOME or ~/.config
 CONFIG_LOCATIONS = {
     "git": (
-        ["~/.config/git", "~/.gitconfig"],
+        ["$XDG_CONFIG/git", "~/.gitconfig"],
         "/root/.config/git",
     ),
     "tmux": (
-        ["~/.config/tmux", "~/.tmux.conf"],
+        ["$XDG_CONFIG/tmux", "~/.tmux.conf"],
         "/root/.config/tmux",
     ),
     "fish": (
-        ["~/.config/fish"],
+        ["$XDG_CONFIG/fish"],
         "/root/.config/fish",
     ),
 }
+
+
+def expand_config_path(path):
+    # type: (str) -> str
+    """Expand config path, using XDG_CONFIG_HOME for $XDG_CONFIG/ prefix."""
+    if path.startswith("$XDG_CONFIG/"):
+        xdg_config = os.environ.get("XDG_CONFIG_HOME")
+        if xdg_config:
+            base = xdg_config
+        else:
+            base = os.path.expanduser("~/.config")
+        return os.path.join(base, path[len("$XDG_CONFIG/") :])
+    return os.path.expanduser(path)
 
 
 def get_config_dir():
@@ -408,7 +422,7 @@ def sync_config(ip, ssh_key_file, password, apps):
         # Find first existing local path
         local_path = None
         for path in local_paths:
-            expanded = os.path.expanduser(path)
+            expanded = expand_config_path(path)
             if os.path.exists(expanded):
                 local_path = expanded
                 break
