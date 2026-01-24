@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
@@ -62,6 +63,7 @@ class InstanceInfo(TypedDict):
     ip: str
     root_password: str
     ssh_key: str | None
+    created_at: str | None
 
 
 # Config locations for --conf option
@@ -302,6 +304,57 @@ def remove_instance(name):
 def generate_random_suffix(length=4):
     # type: (int) -> str
     return "".join(random.choices(string.ascii_lowercase + string.digits, k=length))
+
+
+def format_relative_time(iso_timestamp):
+    # type: (str | None) -> str
+    """Format a timestamp as relative time like '5 minutes ago' or '2026 Jan 24th'."""
+    if not iso_timestamp:
+        return ""
+
+    created = datetime.fromisoformat(iso_timestamp)
+
+    now = datetime.now()
+    diff = now - created
+    seconds = diff.total_seconds()
+
+    if seconds < 0:
+        return ""
+
+    minutes = seconds / 60
+    hours = minutes / 60
+    days = hours / 24
+    weeks = days / 7
+
+    if minutes < 1:
+        return "just now"
+    elif minutes < 2:
+        return "1 minute ago"
+    elif minutes < 60:
+        return f"{int(minutes)} minutes ago"
+    elif hours < 2:
+        return "1 hour ago"
+    elif hours < 24:
+        return f"{int(hours)} hours ago"
+    elif days < 2:
+        return "1 day ago"
+    elif days < 7:
+        return f"{int(days)} days ago"
+    elif weeks < 2:
+        return "1 week ago"
+    elif days < 30:
+        return f"{int(weeks)} weeks ago"
+    else:
+        # More than a month - show the date
+        day = created.day
+        suffix = "th"
+        if day % 10 == 1 and day != 11:
+            suffix = "st"
+        elif day % 10 == 2 and day != 12:
+            suffix = "nd"
+        elif day % 10 == 3 and day != 13:
+            suffix = "rd"
+        return created.strftime(f"%Y %b {day}{suffix}")
 
 
 def check_hcloud_installed():
@@ -576,6 +629,7 @@ def create_server(
             "ip": ip,
             "root_password": root_password,
             "ssh_key": ssh_key_name,
+            "created_at": datetime.now().isoformat(),
         },
     )
 
@@ -683,18 +737,23 @@ def cmd_list(args):
 
     print(f"Instances ({len(all_names)}):")
     for name in sorted(all_names):
+        # Get created_at from cache if available
+        cached_info = cached.get(name, {})
+        created_at = cached_info.get("created_at")
+        created_str = format_relative_time(created_at)
+        created_display = f"  {created_str}" if created_str else ""
         if name in hetzner_servers:
             info = hetzner_servers[name]
             ip = info.get("ip", "unknown")
             size = info.get("size", "unknown")
             status = info.get("status", "unknown")
-            print(f"  {name}  {ip}  {status}  ({size})")
+            print(f"  {name}  {ip}  {status}  ({size}){created_display}")
         else:
             # In cache but not in Hetzner (stale)
             info = cached[name]
             ip = info.get("ip", "unknown")
             size = info.get("size", "unknown")
-            print(f"  {name}  {ip}  not found  ({size})")
+            print(f"  {name}  {ip}  not found  ({size}){created_display}")
 
 
 def cmd_destroy(args):
