@@ -25,6 +25,8 @@ class CmdArgsCreate:
     ssh_key: str | None
     ssh: bool
     workdir: bool
+    conf: str | None
+    no_conf: bool
 
 
 @dataclass
@@ -51,6 +53,25 @@ class InstanceInfo(TypedDict):
     ip: str
     root_password: str
     ssh_key: str | None
+
+
+# Config locations for --conf option
+# Each entry maps app name to (local_paths, remote_path)
+# local_paths are tried in order, first existing one is used
+CONFIG_LOCATIONS = {
+    "git": (
+        ["~/.config/git", "~/.gitconfig"],
+        "/root/.config/git",
+    ),
+    "tmux": (
+        ["~/.config/tmux", "~/.tmux.conf"],
+        "/root/.config/tmux",
+    ),
+    "fish": (
+        ["~/.config/fish"],
+        "/root/.config/fish",
+    ),
+}
 
 
 def get_config_dir():
@@ -372,6 +393,83 @@ def sync_workdir(ip, ssh_key_file, password, workdir):
         return None
 
 
+def sync_config(ip, ssh_key_file, password, apps):
+    # type: (str, str, str | None, list[str]) -> None
+    """Sync config files for specified apps to remote server."""
+    for app in apps:
+        app = app.strip().lower()
+        if app not in CONFIG_LOCATIONS:
+            print(f"Warning: Unknown config app '{app}', skipping")
+            print(f"  Supported: {', '.join(CONFIG_LOCATIONS.keys())}")
+            continue
+
+        local_paths, remote_path = CONFIG_LOCATIONS[app]
+
+        # Find first existing local path
+        local_path = None
+        for path in local_paths:
+            expanded = os.path.expanduser(path)
+            if os.path.exists(expanded):
+                local_path = expanded
+                break
+
+        if not local_path:
+            print(f"Warning: No config found for '{app}', skipping")
+            print(f"  Looked in: {', '.join(local_paths)}")
+            continue
+
+        local_path_obj = Path(local_path)
+        is_dir = local_path_obj.is_dir()
+
+        print(f"Syncing {app} config: {local_path} -> {remote_path}")
+
+        # Create parent directory on remote
+        parent_dir = str(Path(remote_path).parent)
+        subprocess.run(
+            [
+                *base_ssh_cmd(ssh_key_file=ssh_key_file, password=password),
+                f"root@{ip}",
+                f"mkdir -p {parent_dir}",
+            ],
+            capture_output=True,
+        )
+
+        # Rsync the config
+        if is_dir:
+            # For directories, sync contents into remote path
+            result = subprocess.run(
+                [
+                    "rsync",
+                    "-avz",
+                    "-e",
+                    " ".join(
+                        base_ssh_cmd(ssh_key_file=ssh_key_file, password=password)
+                    ),
+                    f"{local_path}/",
+                    f"root@{ip}:{remote_path}/",
+                ]
+            )
+        else:
+            # For files (like ~/.gitconfig or ~/.tmux.conf), copy to remote path
+            result = subprocess.run(
+                [
+                    "rsync",
+                    "-avz",
+                    "-e",
+                    " ".join(
+                        base_ssh_cmd(ssh_key_file=ssh_key_file, password=password)
+                    ),
+                    local_path,
+                    f"root@{ip}:{remote_path}",
+                ]
+            )
+
+        if result.returncode == 0:
+            print(f"  Synced {app} config")
+        else:
+            print(f"  Warning: Failed to sync {app} config")
+
+
 def ssh_into_server(ip, ssh_key_file, password, workdir=None):
     # type: (str, str, str | None, str | None) -> None
     """SSH into the server, replacing current process."""
@@ -388,9 +486,9 @@ def ssh_into_server(ip, ssh_key_file, password, workdir=None):
 
 
 def create_server(
-    name, size, image, location, ssh_key_name, do_ssh=False, workdir=None
+    name, size, image, location, ssh_key_name, do_ssh=False, workdir=None, conf=None
 ):
-    # type: (str, str, str, str, str, bool, str | None) -> None
+    # type: (str, str, str, str, str, bool, str | None, list[str] | None) -> None
     cmd = [
         "hcloud",
         "server",
@@ -457,7 +555,7 @@ def create_server(
         },
     )
 
-    if ip and (do_ssh or workdir):
+    if ip and (do_ssh or workdir or conf):
         print("Waiting for SSH to become available...")
         if not wait_for_ssh(
             ip, ssh_key_file=local_ssh_key_path, password=root_password
@@ -468,6 +566,11 @@ def create_server(
     if workdir:
         remote_workdir = sync_workdir(
             ip, ssh_key_file=local_ssh_key_path, password=root_password, workdir=workdir
+        )
+
+    if conf:
+        sync_config(
+            ip, ssh_key_file=local_ssh_key_path, password=root_password, apps=conf
         )
 
     if do_ssh:
@@ -500,6 +603,12 @@ def cmd_create(args):
     settings = load_settings() or {}
 
     workdir = os.getcwd() if args.workdir else None
+
+    # Parse --conf argument into list of apps
+    conf = None
+    if args.conf and not args.no_conf:
+        conf = [app.strip() for app in args.conf.split(",") if app.strip()]
+
     create_server(
         name=args.name,
         size=args.size,
@@ -508,6 +617,7 @@ def cmd_create(args):
         ssh_key_name=args.ssh_key or settings.get("default_hetzner_ssh_key"),
         do_ssh=args.ssh,
         workdir=workdir,
+        conf=conf,
     )
 
 
@@ -636,6 +746,18 @@ def add_create_args(parser, default_name):
         action="store_true",
         help="Sync current directory to the server",
     )
+    parser.add_argument(
+        "--conf",
+        default=None,
+        help="Sync config files for specified apps (comma-separated). "
+        f"Supported: {', '.join(CONFIG_LOCATIONS.keys())}",
+    )
+    parser.add_argument(
+        "--no-conf",
+        action="store_true",
+        dest="no_conf",
+        help="Disable config file syncing",
+    )
 
 
 def main():
@@ -654,6 +776,7 @@ Commands:
 Examples:
     spawnm --ssh --workdir
     spawnm create --name web-server --size cx33
+    spawnm --ssh --conf git,tmux,fish
     spawnm list
     spawnm destroy my-server
     spawnm destroy --all
