@@ -18,17 +18,38 @@ if TYPE_CHECKING:
     from argparse import ArgumentParser, Namespace  # noqa: F401
 
 
+DEFAULT_SIZE = "cx23"
+DEFAULT_IMAGE = "ubuntu-24.04"
+DEFAULT_LOCATION = "fsn1"
+
+
+def generate_default_name():
+    return f"spawnm-tmp-{generate_random_suffix()}"
+
+
+class ExitError(Exception):
+    def __init__(self, message, exit_code):
+        # type: (str, int) -> None
+        super().__init__(message)
+        self.message = message
+        self.exit_code = exit_code
+
+
+class NoInstanceForCwdError(ExitError):
+    pass
+
+
+class NamedInstanceNotFoundError(ExitError):
+    pass
+
+
 @dataclass
-class CmdArgsCreate:
+class _CmdArgsCreate_only:
     name: str
     size: str
     image: str
     location: str
     ssh_key: str | None
-    ssh: bool
-    workdir: bool
-    conf: str | None
-    no_conf: bool
 
 
 @dataclass
@@ -38,6 +59,16 @@ class CmdArgsSsh:
     workdir: bool
     conf: str | None
     no_conf: bool
+
+
+@dataclass
+class CmdArgsCreate(_CmdArgsCreate_only, CmdArgsSsh):
+    ssh: bool
+
+
+@dataclass
+class CmdArgsDefault(_CmdArgsCreate_only, CmdArgsSsh):
+    pass
 
 
 @dataclass
@@ -591,94 +622,86 @@ def find_instance_for_current_dir():
     return None
 
 
-def connect_or_create_server(
+def create_server(
     name, size, image, location, ssh_key_name, do_ssh=False, workdir=None, conf=None
 ):
     # type: (str, str, str, str, str, bool, str | None, list[str] | None) -> None
+
+    cmd = [
+        "hcloud",
+        "server",
+        "create",
+        "--name",
+        name,
+        "--type",
+        size,
+        "--image",
+        image,
+        "--location",
+        location,
+        "--output",
+        "json",
+    ]
+
+    if ssh_key_name:
+        cmd.extend(["--ssh-key", ssh_key_name])
+
+    print("Creating Hetzner VM...")
+    print(f"  Name: {name}")
+    print(f"  Type: {size}")
+    print(f"  Image: {image}")
+    print(f"  Location: {location}")
+    if ssh_key_name:
+        print(f"  SSH Key: {ssh_key_name}")
+    print()
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(result.stderr)
+        sys.exit(result.returncode)
+
+    # Parse JSON output to get IP, DNS, and root password
+    create_info = json.loads(result.stdout)
+    root_password = create_info.get("root_password")
+    server_info = create_info.get("server", {})
+    ipv4_info = server_info.get("public_net", {}).get("ipv4", {})
+    ip = ipv4_info.get("ip")
+    dns_ptr = ipv4_info.get("dns_ptr")
+
+    # Use DNS hostname if available, otherwise fall back to IP
+    host = dns_ptr or ip
+
+    print("Server created successfully!")
+    print()
+    if dns_ptr:
+        print(f"  Hostname: {dns_ptr}")
+    if ip:
+        print(f"  IP: {ip}")
+    if root_password:
+        print(f"  Root password: {root_password}")
+    print()
+
+    # Save instance to cache
+    add_instance(
+        name,
+        {
+            "name": name,
+            "size": size,
+            "image": image,
+            "location": location,
+            "ip": ip,
+            "dns_ptr": dns_ptr,
+            "root_password": root_password,
+            "ssh_key": ssh_key_name,
+            "created_at": datetime.now().isoformat(),
+            "spawn_dir": os.getcwd(),
+        },
+    )
+
     # Look up local path for the SSH key
     settings = load_settings() or {}  # type: Settings | dict[str, dict[str, str]]
     ssh_keys_map = settings.get("ssh_keys", {})
     local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
-
-    # If --ssh is used, check for existing instance spawned from this directory
-    existing = find_instance_for_current_dir()
-    if existing:
-        # Connect
-        host = existing.get("dns_ptr") or existing.get("ip")
-        ssh_key_name = existing.get("ssh_key")
-        root_password = existing.get("root_password")
-    else:
-        # Create
-        cmd = [
-            "hcloud",
-            "server",
-            "create",
-            "--name",
-            name,
-            "--type",
-            size,
-            "--image",
-            image,
-            "--location",
-            location,
-            "--output",
-            "json",
-        ]
-
-        if ssh_key_name:
-            cmd.extend(["--ssh-key", ssh_key_name])
-
-        print("Creating Hetzner VM...")
-        print(f"  Name: {name}")
-        print(f"  Type: {size}")
-        print(f"  Image: {image}")
-        print(f"  Location: {location}")
-        if ssh_key_name:
-            print(f"  SSH Key: {ssh_key_name}")
-        print()
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(result.stderr)
-            sys.exit(result.returncode)
-
-        # Parse JSON output to get IP, DNS, and root password
-        create_info = json.loads(result.stdout)
-        root_password = create_info.get("root_password")
-        server_info = create_info.get("server", {})
-        ipv4_info = server_info.get("public_net", {}).get("ipv4", {})
-        ip = ipv4_info.get("ip")
-        dns_ptr = ipv4_info.get("dns_ptr")
-
-        # Use DNS hostname if available, otherwise fall back to IP
-        host = dns_ptr or ip
-
-        print("Server created successfully!")
-        print()
-        if dns_ptr:
-            print(f"  Hostname: {dns_ptr}")
-        if ip:
-            print(f"  IP: {ip}")
-        if root_password:
-            print(f"  Root password: {root_password}")
-        print()
-
-        # Save instance to cache
-        add_instance(
-            name,
-            {
-                "name": name,
-                "size": size,
-                "image": image,
-                "location": location,
-                "ip": ip,
-                "dns_ptr": dns_ptr,
-                "root_password": root_password,
-                "ssh_key": ssh_key_name,
-                "created_at": datetime.now().isoformat(),
-                "spawn_dir": os.getcwd(),
-            },
-        )
 
     if host and (do_ssh or workdir or conf):
         print("Waiting for SSH to become available...")
@@ -752,8 +775,47 @@ def cmd_create(args):
         elif settings.get("conf"):
             conf = settings["conf"]
 
-    connect_or_create_server(
+    create_server(
         name=args.name,
+        size=args.size,
+        image=args.image,
+        location=args.location,
+        ssh_key_name=args.ssh_key or settings.get("default_hetzner_ssh_key"),
+        do_ssh=args.ssh,
+        workdir=workdir,
+        conf=conf,
+    )
+
+
+def cmd_default(args):
+    # type: (CmdArgsDefault) -> None
+    settings = load_settings() or {}
+
+    workdir = os.getcwd() if args.workdir else None
+
+    # Determine which configs to sync:
+    # 1. --no-conf disables all config syncing
+    # 2. --conf overrides the default
+    # 3. Otherwise use conf from settings
+    conf = None
+    if not args.no_conf:
+        if args.conf:
+            conf = [app.strip() for app in args.conf.split(",") if app.strip()]
+        elif settings.get("conf"):
+            conf = settings["conf"]
+
+    # Try and see if can ssh directly to a passed or existing instance
+    try:
+        cmd_ssh(args)
+    except NamedInstanceNotFoundError:
+        # Exit if named instance not found
+        return
+    except NoInstanceForCwdError:
+        # Create new instance if none connected to cwd
+        pass
+
+    create_server(
+        name=args.name or generate_default_name(),
         size=args.size,
         image=args.image,
         location=args.location,
@@ -784,13 +846,16 @@ def cmd_ssh(args):
     if args.name:
         existing = find_named_instance(args.name)
         if not existing:
-            print("Could not find instance with name:", args.name)
-            exit(1)
+            raise NamedInstanceNotFoundError(
+                f"Could not find instance with name: {args.name}", exit_code=1
+            )
 
     existing = find_instance_for_current_dir()
     if not existing:
-        print("Could not find instance connected to current directory:", os.getcwd())
-        exit(1)
+        raise NoInstanceForCwdError(
+            f"Could not find instance connected to current directory: {os.getcwd()}",
+            exit_code=1,
+        )
 
     # Connect
     host = existing.get("dns_ptr") or existing.get("ip")
@@ -956,33 +1021,33 @@ def add_create_args(parser, default_name):
     # type: (ArgumentParser, str) -> None
     """Add create command arguments to a parser."""
     parser.add_argument(
-        "--name",
-        default=default_name,
-        help="Server name (default: spawnm-tmp-XXXX, random suffix)",
-    )
-    parser.add_argument(
         "--size",
-        default="cx23",
-        help="Server type (default: cx23). Examples: cx23, cx33, cx43",
+        default=DEFAULT_SIZE,
+        help=f"Server type (default: {DEFAULT_SIZE}). Examples: cx23, cx33, cx43",
     )
     parser.add_argument(
-        "--image", default="ubuntu-24.04", help="OS image (default: ubuntu-24.04)"
+        "--image", default=DEFAULT_IMAGE, help=f"OS image (default: {DEFAULT_IMAGE})"
     )
     parser.add_argument(
         "--location",
-        default="fsn1",
-        help="Datacenter location (default: fsn1). Options: fsn1, nbg1, hel1, ash",
+        default=DEFAULT_LOCATION,
+        help=f"Datacenter location (default: {DEFAULT_LOCATION}). Options: fsn1, nbg1, hel1, ash",
     )
     parser.add_argument(
         "--ssh-key",
         default=None,
         help="SSH key name in Hetzner Cloud (default: from settings)",
     )
+
     parser.add_argument(
         "--ssh",
         action="store_true",
         help="SSH into the server after creation",
     )
+
+
+def add_connect_args(parser):
+    # type: (ArgumentParser) -> None
     parser.add_argument(
         "--workdir",
         action="store_true",
@@ -1005,7 +1070,7 @@ def add_create_args(parser, default_name):
 
 def main():
     # type: () -> None
-    default_name = f"spawnm-tmp-{generate_random_suffix()}"
+    default_name = generate_default_name()
 
     parser = argparse.ArgumentParser(
         description="Quickly spin up Hetzner instances.",
@@ -1027,17 +1092,25 @@ Examples:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    # No command is passed
+    # No command is passed (default)
+    parser.add_argument("name", nargs="?", help="Server name to connect to")
     add_create_args(parser, default_name)
+    add_connect_args(parser)
 
-    # `create`command
+    # `create` command
     create_parser = subparsers.add_parser("create", help="Create a new instance")
+    create_parser.add_argument(
+        "--name",
+        default=default_name,
+        help="Server name (default: spawnm-tmp-XXXX, random suffix)",
+    )
     add_create_args(create_parser, default_name)
+    add_connect_args(create_parser)
 
     # `ssh` command
     ssh_parser = subparsers.add_parser("ssh", help="Connect to an existing instance")
     ssh_parser.add_argument("name", nargs="?", help="Server name to connect to")
-    ssh_parser.add_argument("--workdir", action="store_true", help="")
+    add_connect_args(ssh_parser)
 
     # `list` command
     subparsers.add_parser("list", help="List tracked instances")
@@ -1091,10 +1164,15 @@ Examples:
         else:
             debug_parser.print_help()
     elif args.command == "ssh":
-        cmd_ssh(args)  # type: ignore
-    else:
-        # Default to create (covers both explicit "create" and no command)
+        try:
+            cmd_ssh(args)  # type: ignore
+        except ExitError as e:
+            print(e.message)
+            exit(e.exit_code)
+    elif args.command == "create":
         cmd_create(args)  # type: ignore
+    else:
+        cmd_default(args)  # type: ignore
 
 
 if __name__ == "__main__":
