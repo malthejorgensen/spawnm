@@ -56,22 +56,21 @@ class InstanceInfo(TypedDict):
 
 
 # Config locations for --conf option
-# Each entry maps app name to (local_paths, remote_path)
-# local_paths are tried in order, first existing one is used
+# Each entry maps app name to list of (local_path, remote_path) pairs
+# Pairs are tried in order, first existing local_path is used
 # Paths starting with $XDG_CONFIG/ use XDG_CONFIG_HOME or ~/.config
 CONFIG_LOCATIONS = {
-    "git": (
-        ["$XDG_CONFIG/git", "~/.gitconfig"],
-        "/root/.config/git",
-    ),
-    "tmux": (
-        ["$XDG_CONFIG/tmux", "~/.tmux.conf"],
-        "/root/.config/tmux",
-    ),
-    "fish": (
-        ["$XDG_CONFIG/fish"],
-        "/root/.config/fish",
-    ),
+    "git": [
+        ("$XDG_CONFIG/git", "/root/.config/git"),
+        ("~/.gitconfig", "/root/.gitconfig"),
+    ],
+    "tmux": [
+        ("$XDG_CONFIG/tmux", "/root/.config/tmux"),
+        ("~/.tmux.conf", "/root/.tmux.conf"),
+    ],
+    "fish": [
+        ("$XDG_CONFIG/fish", "/root/.config/fish"),
+    ],
 }
 
 
@@ -417,19 +416,22 @@ def sync_config(ip, ssh_key_file, password, apps):
             print(f"  Supported: {', '.join(CONFIG_LOCATIONS.keys())}")
             continue
 
-        local_paths, remote_path = CONFIG_LOCATIONS[app]
+        path_pairs = CONFIG_LOCATIONS[app]
 
         # Find first existing local path
         local_path = None
-        for path in local_paths:
-            expanded = expand_config_path(path)
+        remote_path = None
+        for local_template, remote in path_pairs:
+            expanded = expand_config_path(local_template)
             if os.path.exists(expanded):
                 local_path = expanded
+                remote_path = remote
                 break
 
         if not local_path:
+            looked_in = [p[0] for p in path_pairs]
             print(f"Warning: No config found for '{app}', skipping")
-            print(f"  Looked in: {', '.join(local_paths)}")
+            print(f"  Looked in: {', '.join(looked_in)}")
             continue
 
         local_path_obj = Path(local_path)
