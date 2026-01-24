@@ -40,9 +40,10 @@ class CmdArgsList:
     pass
 
 
-class Settings(TypedDict):
+class Settings(TypedDict, total=False):
     default_hetzner_ssh_key: str
     ssh_keys: dict[str, str]  # name -> local path (e.g. ~/.ssh/id_hetzner)
+    conf: list[str]  # e.g. ["git", "tmux", "fish"]
 
 
 class InstanceInfo(TypedDict):
@@ -620,10 +621,16 @@ def cmd_create(args):
 
     workdir = os.getcwd() if args.workdir else None
 
-    # Parse --conf argument into list of apps
+    # Determine which configs to sync:
+    # 1. --no-conf disables all config syncing
+    # 2. --conf overrides the default
+    # 3. Otherwise use conf from settings
     conf = None
-    if args.conf and not args.no_conf:
-        conf = [app.strip() for app in args.conf.split(",") if app.strip()]
+    if not args.no_conf:
+        if args.conf:
+            conf = [app.strip() for app in args.conf.split(",") if app.strip()]
+        elif settings.get("conf"):
+            conf = settings["conf"]
 
     create_server(
         name=args.name,
@@ -766,13 +773,14 @@ def add_create_args(parser, default_name):
         "--conf",
         default=None,
         help="Sync config files for specified apps (comma-separated). "
-        f"Supported: {', '.join(CONFIG_LOCATIONS.keys())}",
+        f"Supported: {', '.join(CONFIG_LOCATIONS.keys())}. "
+        "Set default_conf in settings.json to sync by default.",
     )
     parser.add_argument(
         "--no-conf",
         action="store_true",
         dest="no_conf",
-        help="Disable config file syncing",
+        help="Disable config file syncing (overrides default_conf in settings)",
     )
 
 
