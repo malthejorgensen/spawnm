@@ -564,85 +564,105 @@ def ssh_into_server(host, ssh_key_file, password, workdir=None):
     os.execvp(ssh_cmd[0], ssh_cmd)
 
 
-def create_server(
+def find_instance_for_current_dir():
+    # type: () -> InstanceInfo | None
+    """Find an instance that was spawned from the current directory."""
+    current_dir = os.getcwd()
+    instances = load_instances()
+    for instance in instances.values():
+        if instance.get("spawn_dir") == current_dir:
+            return instance
+    return None
+
+
+def connect_or_create_server(
     name, size, image, location, ssh_key_name, do_ssh=False, workdir=None, conf=None
 ):
     # type: (str, str, str, str, str, bool, str | None, list[str] | None) -> None
-    cmd = [
-        "hcloud",
-        "server",
-        "create",
-        "--name",
-        name,
-        "--type",
-        size,
-        "--image",
-        image,
-        "--location",
-        location,
-        "--output",
-        "json",
-    ]
-
-    if ssh_key_name:
-        cmd.extend(["--ssh-key", ssh_key_name])
-
     # Look up local path for the SSH key
     settings = load_settings() or {}  # type: Settings | dict[str, dict[str, str]]
     ssh_keys_map = settings.get("ssh_keys", {})
     local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
 
-    print("Creating Hetzner VM...")
-    print(f"  Name: {name}")
-    print(f"  Type: {size}")
-    print(f"  Image: {image}")
-    print(f"  Location: {location}")
-    if ssh_key_name:
-        print(f"  SSH Key: {ssh_key_name}")
-    print()
+    # If --ssh is used, check for existing instance spawned from this directory
+    existing = find_instance_for_current_dir()
+    if existing:
+        # Connect
+        host = existing.get("dns_ptr") or existing.get("ip")
+        ssh_key_name = existing.get("ssh_key")
+        root_password = existing.get("root_password")
+    else:
+        # Create
+        cmd = [
+            "hcloud",
+            "server",
+            "create",
+            "--name",
+            name,
+            "--type",
+            size,
+            "--image",
+            image,
+            "--location",
+            location,
+            "--output",
+            "json",
+        ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(result.stderr)
-        sys.exit(result.returncode)
+        if ssh_key_name:
+            cmd.extend(["--ssh-key", ssh_key_name])
 
-    # Parse JSON output to get IP, DNS, and root password
-    create_info = json.loads(result.stdout)
-    root_password = create_info.get("root_password")
-    server_info = create_info.get("server", {})
-    ipv4_info = server_info.get("public_net", {}).get("ipv4", {})
-    ip = ipv4_info.get("ip")
-    dns_ptr = ipv4_info.get("dns_ptr")
+        print("Creating Hetzner VM...")
+        print(f"  Name: {name}")
+        print(f"  Type: {size}")
+        print(f"  Image: {image}")
+        print(f"  Location: {location}")
+        if ssh_key_name:
+            print(f"  SSH Key: {ssh_key_name}")
+        print()
 
-    # Use DNS hostname if available, otherwise fall back to IP
-    host = dns_ptr or ip
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(result.stderr)
+            sys.exit(result.returncode)
 
-    print("Server created successfully!")
-    print()
-    if dns_ptr:
-        print(f"  Hostname: {dns_ptr}")
-    if ip:
-        print(f"  IP: {ip}")
-    if root_password:
-        print(f"  Root password: {root_password}")
-    print()
+        # Parse JSON output to get IP, DNS, and root password
+        create_info = json.loads(result.stdout)
+        root_password = create_info.get("root_password")
+        server_info = create_info.get("server", {})
+        ipv4_info = server_info.get("public_net", {}).get("ipv4", {})
+        ip = ipv4_info.get("ip")
+        dns_ptr = ipv4_info.get("dns_ptr")
 
-    # Save instance to cache
-    add_instance(
-        name,
-        {
-            "name": name,
-            "size": size,
-            "image": image,
-            "location": location,
-            "ip": ip,
-            "dns_ptr": dns_ptr,
-            "root_password": root_password,
-            "ssh_key": ssh_key_name,
-            "created_at": datetime.now().isoformat(),
-            "spawn_dir": os.getcwd(),
-        },
-    )
+        # Use DNS hostname if available, otherwise fall back to IP
+        host = dns_ptr or ip
+
+        print("Server created successfully!")
+        print()
+        if dns_ptr:
+            print(f"  Hostname: {dns_ptr}")
+        if ip:
+            print(f"  IP: {ip}")
+        if root_password:
+            print(f"  Root password: {root_password}")
+        print()
+
+        # Save instance to cache
+        add_instance(
+            name,
+            {
+                "name": name,
+                "size": size,
+                "image": image,
+                "location": location,
+                "ip": ip,
+                "dns_ptr": dns_ptr,
+                "root_password": root_password,
+                "ssh_key": ssh_key_name,
+                "created_at": datetime.now().isoformat(),
+                "spawn_dir": os.getcwd(),
+            },
+        )
 
     if host and (do_ssh or workdir or conf):
         print("Waiting for SSH to become available...")
@@ -707,7 +727,7 @@ def cmd_create(args):
         elif settings.get("conf"):
             conf = settings["conf"]
 
-    create_server(
+    connect_or_create_server(
         name=args.name,
         size=args.size,
         image=args.image,
