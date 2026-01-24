@@ -32,6 +32,15 @@ class CmdArgsCreate:
 
 
 @dataclass
+class CmdArgsSsh:
+    name: str
+    ssh_key: str | None
+    workdir: bool
+    conf: str | None
+    no_conf: bool
+
+
+@dataclass
 class CmdArgsDestroy:
     name: str | None
     all: bool
@@ -564,6 +573,13 @@ def ssh_into_server(host, ssh_key_file, password, workdir=None):
     os.execvp(ssh_cmd[0], ssh_cmd)
 
 
+def find_named_instance(name):
+    # type: (str) -> InstanceInfo | None
+    """Find an instance that was spawned from the current directory."""
+    instances = load_instances()
+    return instances.get(name)
+
+
 def find_instance_for_current_dir():
     # type: () -> InstanceInfo | None
     """Find an instance that was spawned from the current directory."""
@@ -671,6 +687,15 @@ def connect_or_create_server(
         ):
             print("Warning: SSH not available after timeout, trying anyway...")
 
+    ssh_setup_and_connect(
+        host, local_ssh_key_path, root_password, do_ssh, workdir, conf
+    )
+
+
+def ssh_setup_and_connect(
+    host, local_ssh_key_path, root_password, do_ssh, workdir, conf
+):
+    # type: (str, str, str | None, bool, str | None, list[str] | None) -> None
     remote_workdir = None
     if workdir:
         remote_workdir = sync_workdir(
@@ -734,6 +759,52 @@ def cmd_create(args):
         location=args.location,
         ssh_key_name=args.ssh_key or settings.get("default_hetzner_ssh_key"),
         do_ssh=args.ssh,
+        workdir=workdir,
+        conf=conf,
+    )
+
+
+def cmd_ssh(args):
+    # type: (CmdArgsSsh) -> None
+    settings = load_settings() or {}
+
+    workdir = os.getcwd() if args.workdir else None
+
+    # Determine which configs to sync:
+    # 1. --no-conf disables all config syncing
+    # 2. --conf overrides the default
+    # 3. Otherwise use conf from settings
+    conf = None
+    if not args.no_conf:
+        if args.conf:
+            conf = [app.strip() for app in args.conf.split(",") if app.strip()]
+        elif settings.get("conf"):
+            conf = settings["conf"]
+
+    if args.name:
+        existing = find_named_instance(args.name)
+        if not existing:
+            print("Could not find instance with name:", args.name)
+            exit(1)
+
+    existing = find_instance_for_current_dir()
+    if not existing:
+        print("Could not find instance connected to current directory:", os.getcwd())
+        exit(1)
+
+    # Connect
+    host = existing.get("dns_ptr") or existing.get("ip")
+    ssh_key_name = existing.get("ssh_key")
+    root_password = existing.get("root_password")
+
+    ssh_keys_map = settings.get("ssh_keys", {})
+    local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
+
+    ssh_setup_and_connect(
+        host=host,
+        local_ssh_key_path=local_ssh_key_path,
+        root_password=root_password,
+        do_ssh=True,
         workdir=workdir,
         conf=conf,
     )
@@ -956,27 +1027,32 @@ Examples:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    # Add create args to main parser (for default behavior)
+    # No command is passed
     add_create_args(parser, default_name)
 
-    # Create command (explicit)
+    # `create`command
     create_parser = subparsers.add_parser("create", help="Create a new instance")
     add_create_args(create_parser, default_name)
 
-    # List command
+    # `ssh` command
+    ssh_parser = subparsers.add_parser("ssh", help="Connect to an existing instance")
+    ssh_parser.add_argument("name", nargs="?", help="Server name to connect to")
+    ssh_parser.add_argument("--workdir", action="store_true", help="")
+
+    # `list` command
     subparsers.add_parser("list", help="List tracked instances")
 
-    # Destroy command
+    # `destroy` command
     destroy_parser = subparsers.add_parser("destroy", help="Destroy an instance")
     destroy_parser.add_argument("name", nargs="?", help="Server name to destroy")
     destroy_parser.add_argument(
         "--all", action="store_true", help="Destroy all tracked instances"
     )
 
-    # Uninstal command
+    # `uninstall` command
     subparsers.add_parser("uninstall", help="Uninstall spawnm (remove settings)")
 
-    # Debug command with subcommands
+    # `debug` command with subcommands
     debug_parser = subparsers.add_parser("debug", help="Debug commands")
     debug_subparsers = debug_parser.add_subparsers(dest="debug_command")
 
@@ -1014,6 +1090,8 @@ Examples:
             cmd_debug_conf(args)  # type: ignore
         else:
             debug_parser.print_help()
+    elif args.command == "ssh":
+        cmd_ssh(args)  # type: ignore
     else:
         # Default to create (covers both explicit "create" and no command)
         cmd_create(args)  # type: ignore
