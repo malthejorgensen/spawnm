@@ -607,10 +607,14 @@ def sync_config(host, ssh_key_file, use_password, apps):
                 shutil.copy2(local_path, target)
 
         # Tar and pipe over SSH to extract at /root
+        # COPYFILE_DISABLE=1 prevents macOS from including ._ resource fork files
         print("Transferring configs...")
+        tar_env = os.environ.copy()
+        tar_env["COPYFILE_DISABLE"] = "1"
         tar_cmd = popen_subprocess(
             ["tar", "-cf", "-", "-C", tmpdir, "."],
             stdout=subprocess.PIPE,
+            env=tar_env,
         )
         ssh_cmd = popen_subprocess(
             [
