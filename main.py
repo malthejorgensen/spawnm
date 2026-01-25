@@ -1227,7 +1227,6 @@ Examples:
     subparsers = parser.add_subparsers(dest="command")
 
     # No command is passed (default)
-    parser.add_argument("name", nargs="?", help="Server name to connect to")
     add_create_args(parser, default_name)
     add_connect_args(parser)
 
