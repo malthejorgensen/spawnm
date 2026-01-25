@@ -833,7 +833,7 @@ def cmd_create(args):
         ensure_sshpass_installed()
 
     create_server(
-        name=args.name,
+        name=args.name or generate_default_name(),
         size=args.size,
         image=args.image,
         location=args.location,
@@ -847,7 +847,6 @@ def cmd_create(args):
 
 def cmd_default(args):
     # type: (CmdArgsDefault) -> None
-
 
     # Try and see if can ssh directly to a passed or existing instance
     try:
@@ -1019,7 +1018,7 @@ def cmd_info(args):
     print()
 
     # Look up local SSH key path
-    ssh_key_name = instance['ssh_key']
+    ssh_key_name = instance["ssh_key"]
     settings = load_settings() or {}
     ssh_keys_map = settings.get("ssh_keys", {})
     local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
@@ -1132,9 +1131,12 @@ def cmd_debug_conf(args):
     sync_config(host, ssh_key_file=local_ssh_key_path, use_password=None, apps=conf)
 
 
-def add_create_args(parser, default_name):
-    # type: (ArgumentParser, str) -> None
+def add_create_args(parser):
+    # type: (ArgumentParser) -> None
     """Add create command arguments to a parser."""
+    parser.add_argument(
+        "--name", help="Server name (default: spawnm-tmp-XXXX, random suffix)"
+    )
     parser.add_argument(
         "--size",
         default=DEFAULT_SIZE,
@@ -1190,8 +1192,6 @@ def add_connect_args(parser):
 
 def main():
     # type: () -> None
-    default_name = generate_default_name()
-
     parser = argparse.ArgumentParser(
         description="Quickly spin up Hetzner instances.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1221,17 +1221,12 @@ Examples:
     subparsers = parser.add_subparsers(dest="command")
 
     # No command is passed (default)
-    add_create_args(parser, default_name)
+    add_create_args(parser)
     add_connect_args(parser)
 
     # `create` command
     create_parser = subparsers.add_parser("create", help="Create a new instance")
-    create_parser.add_argument(
-        "--name",
-        default=default_name,
-        help="Server name (default: spawnm-tmp-XXXX, random suffix)",
-    )
-    add_create_args(create_parser, default_name)
+    add_create_args(create_parser)
     add_connect_args(create_parser)
 
     # `ssh` command
