@@ -115,6 +115,11 @@ class CmdArgsList:
 
 
 @dataclass
+class CmdArgsInfo:
+    name: str | None
+
+
+@dataclass
 class CmdArgsDebugConf:
     name: str
     conf: str | None
@@ -992,6 +997,64 @@ def cmd_list(args):
             print(f"  {name}  {host}  not found  ({size}){created_display}")
 
 
+def cmd_info(args):
+    # type: (CmdArgsInfo) -> None
+    instances = load_instances()
+    from_cwd = False
+
+    if args.name:
+        instance = instances.get(args.name)
+        if not instance:
+            print(f"Error: Instance '{args.name}' not found in cache.")
+            print("Use 'spawnm list' to see tracked instances.")
+            sys.exit(1)
+    else:
+        # Find instance for current directory
+        instance = find_instance_for_current_dir()
+        if not instance:
+            print(f"No instance found for current directory: {os.getcwd()}")
+            print("Use 'spawnm info <name>' to specify an instance.")
+            sys.exit(1)
+        from_cwd = True
+
+    name = instance.get("name", "unknown")
+    if from_cwd:
+        print(f"Instance for current directory: {name}")
+    else:
+        print(f"Instance: {name}")
+    print()
+
+    # Look up local SSH key path
+    ssh_key_name = instance['ssh_key']
+    settings = load_settings() or {}
+    ssh_keys_map = settings.get("ssh_keys", {})
+    local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
+    str_ssh_key_path = "(Unknown key)"
+    if local_ssh_key_path:
+        str_ssh_key_path = f"({local_ssh_key_path})"
+
+    # Display all instance info
+    if instance.get("dns_ptr"):
+        print(f"  Hostname: {instance['dns_ptr']}")
+    if instance.get("ip"):
+        print(f"  IP: {instance['ip']}")
+    if instance.get("size"):
+        print(f"  Size: {instance['size']}")
+    if instance.get("image"):
+        print(f"  Image: {instance['image']}")
+    if instance.get("location"):
+        print(f"  Location: {instance['location']}")
+    if instance.get("ssh_key"):
+        print(f"  SSH Key: {instance['ssh_key']} {str_ssh_key_path}")
+    if instance.get("root_password"):
+        print(f"  Root Password: {instance['root_password']}")
+    if instance.get("created_at"):
+        created_str = format_relative_time(instance["created_at"])
+        print(f"  Created: {created_str} ({instance['created_at']})")
+    if instance.get("spawn_dir"):
+        print(f"  Spawn Directory: {instance['spawn_dir']}")
+
+
 def cmd_destroy(args):
     # type: (CmdArgsDestroy) -> None
     instances = load_instances()
@@ -1142,6 +1205,7 @@ def main():
 Commands:
     spawnm [create]  Create a new instance (default)
     spawnm list      List tracked instances
+    spawnm info      Show details of an instance
     spawnm destroy   Destroy an instance
 
 Examples:
@@ -1185,6 +1249,12 @@ Examples:
     # `list` command
     subparsers.add_parser("list", help="List tracked instances")
 
+    # `info` command
+    info_parser = subparsers.add_parser("info", help="Show details of an instance")
+    info_parser.add_argument(
+        "name", nargs="?", help="Server name (default: instance for current directory)"
+    )
+
     # `destroy` command
     destroy_parser = subparsers.add_parser("destroy", help="Destroy an instance")
     destroy_parser.add_argument("name", nargs="?", help="Server name to destroy")
@@ -1227,6 +1297,8 @@ Examples:
 
     if args.command == "list":
         cmd_list(args)  # type: ignore
+    elif args.command == "info":
+        cmd_info(args)  # type: ignore
     elif args.command == "destroy":
         cmd_destroy(args)  # type: ignore
     elif args.command == "uninstall":
