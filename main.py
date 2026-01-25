@@ -885,8 +885,8 @@ def cmd_default(args):
     )
 
 
-def cmd_ssh(args):
-    # type: (CmdArgsSsh) -> None
+def cmd_ssh(args, debug=False):
+    # type: (CmdArgsSsh, bool) -> None
     settings = load_settings() or {}
 
     workdir = os.getcwd() if args.workdir else None
@@ -918,17 +918,25 @@ def cmd_ssh(args):
             )
             exit(1)
 
+    # Look up local SSH key path
     ssh_keys_map = settings.get("ssh_keys", {})
     local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
 
-    ssh_setup_and_connect(
-        host=host,
-        local_ssh_key_path=local_ssh_key_path,
-        use_password=use_password,
-        do_ssh=True,
-        workdir=workdir,
-        conf=None,
-    )
+    if debug:
+        ssh_cmd = [
+            *base_ssh_cmd(ssh_key_file=local_ssh_key_path, use_password=use_password),
+            f"root@{host}",
+        ]
+        print(_format_cmd(ssh_cmd))
+    else:
+        ssh_setup_and_connect(
+            host=host,
+            local_ssh_key_path=local_ssh_key_path,
+            use_password=use_password,
+            do_ssh=True,
+            workdir=workdir,
+            conf=None,
+        )
 
 
 def cmd_list(args):
@@ -1275,6 +1283,14 @@ Examples:
         help="Disable default config syncing",
     )
 
+    # debug sshcmd [name]
+    debug_sshcmd_parser = debug_subparsers.add_parser(
+        "sshcmd", help="Print the SSH command that would be run"
+    )
+    debug_sshcmd_parser.add_argument(
+        "name", nargs="?", help="Server name (default: instance for current directory)"
+    )
+
     args = parser.parse_args()
 
     global VERBOSITY
@@ -1294,11 +1310,17 @@ Examples:
     elif args.command == "debug":
         if args.debug_command == "conf":
             cmd_debug_conf(args)  # type: ignore
+        elif args.debug_command == "sshcmd":
+            try:
+                cmd_ssh(args, debug=True)  # type: ignore
+            except ExitError as e:
+                print(e.message)
+                exit(e.exit_code)
         else:
             debug_parser.print_help()
     elif args.command == "ssh":
         try:
-            cmd_ssh(args)  # type: ignore
+            cmd_ssh(args, debug=False)  # type: ignore
         except ExitError as e:
             print(e.message)
             exit(e.exit_code)
