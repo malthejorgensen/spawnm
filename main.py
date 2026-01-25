@@ -847,8 +847,19 @@ def cmd_create(args):
 
 def cmd_default(args):
     # type: (CmdArgsDefault) -> None
-    settings = load_settings() or {}
 
+
+    # Try and see if can ssh directly to a passed or existing instance
+    try:
+        cmd_ssh(args)
+    except NamedInstanceNotFoundError:
+        # Exit if named instance not found
+        return
+    except NoInstanceForCwdError:
+        # Create new instance if none connected to cwd
+        pass
+
+    settings = load_settings() or {}
     workdir = os.getcwd() if args.workdir else None
 
     # Determine which configs to sync:
@@ -861,16 +872,6 @@ def cmd_default(args):
             conf = [app.strip() for app in args.conf.split(",") if app.strip()]
         elif settings.get("conf"):
             conf = settings["conf"]
-
-    # Try and see if can ssh directly to a passed or existing instance
-    try:
-        cmd_ssh(args)
-    except NamedInstanceNotFoundError:
-        # Exit if named instance not found
-        return
-    except NoInstanceForCwdError:
-        # Create new instance if none connected to cwd
-        pass
 
     create_server(
         name=args.name or generate_default_name(),
@@ -890,17 +891,6 @@ def cmd_ssh(args):
     settings = load_settings() or {}
 
     workdir = os.getcwd() if args.workdir else None
-
-    # Determine which configs to sync:
-    # 1. --no-conf disables all config syncing
-    # 2. --conf overrides the default
-    # 3. Otherwise use conf from settings
-    conf = None
-    if not args.no_conf:
-        if args.conf:
-            conf = [app.strip() for app in args.conf.split(",") if app.strip()]
-        elif settings.get("conf"):
-            conf = settings["conf"]
 
     if args.name:
         existing = find_named_instance(args.name)
@@ -938,7 +928,7 @@ def cmd_ssh(args):
         use_password=use_password,
         do_ssh=True,
         workdir=workdir,
-        conf=conf,
+        conf=None,
     )
 
 
@@ -1163,6 +1153,19 @@ def add_create_args(parser, default_name):
         default=None,
         help="SSH key name in Hetzner Cloud (default: from settings)",
     )
+    parser.add_argument(
+        "--conf",
+        default=None,
+        help="Sync config files for specified apps (comma-separated). "
+        f"Supported: {', '.join(CONFIG_LOCATIONS.keys())}. "
+        "Set default_conf in settings.json to sync by default.",
+    )
+    parser.add_argument(
+        "--no-conf",
+        action="store_true",
+        dest="no_conf",
+        help="Disable config file syncing (overrides default_conf in settings)",
+    )
 
     parser.add_argument(
         "--ssh",
@@ -1177,19 +1180,6 @@ def add_connect_args(parser):
         "--workdir",
         action="store_true",
         help="Sync current directory to the server",
-    )
-    parser.add_argument(
-        "--conf",
-        default=None,
-        help="Sync config files for specified apps (comma-separated). "
-        f"Supported: {', '.join(CONFIG_LOCATIONS.keys())}. "
-        "Set default_conf in settings.json to sync by default.",
-    )
-    parser.add_argument(
-        "--no-conf",
-        action="store_true",
-        dest="no_conf",
-        help="Disable config file syncing (overrides default_conf in settings)",
     )
     parser.add_argument(
         "--usepass",
