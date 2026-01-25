@@ -620,7 +620,7 @@ def sync_config(host, ssh_key_file, use_password, apps):
             [
                 *base_ssh_cmd(ssh_key_file=ssh_key_file, use_password=use_password),
                 f"root@{host}",
-                "tar -xf - -C /root --warning=no-unknown-keyword",
+                "tar -xf - -C /root --no-overwrite-dir --warning=no-unknown-keyword",
             ],
             stdin=tar_cmd.stdout,
         )
