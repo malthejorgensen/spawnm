@@ -962,6 +962,7 @@ def cmd_list(args):
                     "dns_ptr": ipv4_info.get("dns_ptr"),
                     "status": server.get("status"),
                     "size": server.get("server_type", {}).get("name"),
+                    "image": server.get("image", {}).get("name"),
                 }
 
     # Merge: all servers from Hetzner + cached servers not in Hetzner
@@ -989,13 +990,15 @@ def cmd_list(args):
             )
             size = info.get("size", "unknown")
             status = info.get("status", "unknown")
-            print(f"  {name}  {host}  {status}  ({size}){created_display}")
+            image = info.get("image", "unknown")
+            print(f"  {name}  {host}  {status}  ({size}, {image}){created_display}")
         else:
             # In cache but not in Hetzner (stale)
             info = cached_info
             host = info.get("dns_ptr") or info.get("ip", "unknown")
             size = info.get("size", "unknown")
-            print(f"  {name}  {host}  not found  ({size}){created_display}")
+            image = info.get("image", "unknown")
+            print(f"  {name}  {host}  not found  ({size}, {image}){created_display}")
 
 
 def cmd_info(args):
