@@ -897,13 +897,13 @@ def cmd_ssh(args, debug=False):
             raise NamedInstanceNotFoundError(
                 f"Could not find instance with name: {args.name}", exit_code=1
             )
-
-    existing = find_instance_for_current_dir()
-    if not existing:
-        raise NoInstanceForCwdError(
-            f"Could not find instance connected to current directory: {os.getcwd()}",
-            exit_code=1,
-        )
+    else:
+        existing = find_instance_for_current_dir()
+        if not existing:
+            raise NoInstanceForCwdError(
+                f"Could not find instance connected to current directory: {os.getcwd()}",
+                exit_code=1,
+            )
 
     # Connect
     host = existing.get("dns_ptr") or existing.get("ip")
