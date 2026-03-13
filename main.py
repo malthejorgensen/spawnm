@@ -633,15 +633,17 @@ def sync_config(host, ssh_key_file, use_password, apps):
             print("  Warning: Failed to sync configs")
 
 
-def ssh_into_server(host, ssh_key_file, use_password, workdir=None):
-    # type: (str, str, str | None, str | None) -> None
+def ssh_into_server(host, ssh_key_file, use_password, workdir=None, command=None):
+    # type: (str, str, str | None, str | None, list[str] | None) -> None
     """SSH into the server, replacing current process."""
     ssh_cmd = [
         *base_ssh_cmd(ssh_key_file=ssh_key_file, use_password=use_password),
         f"root@{host}",
     ]
 
-    if workdir:
+    if command:
+        ssh_cmd.extend(command)
+    elif workdir:
         # Start in the synced directory
         ssh_cmd.extend(["-t", f"cd {workdir} && exec $SHELL -l"])
 
@@ -770,9 +772,9 @@ def create_server(
 
 
 def ssh_setup_and_connect(
-    host, local_ssh_key_path, use_password, do_ssh, workdir, conf
+    host, local_ssh_key_path, use_password, do_ssh, workdir, conf, command=None
 ):
-    # type: (str, str, str | None, bool, str | None, list[str] | None) -> None
+    # type: (str, str, str | None, bool, str | None, list[str] | None, list[str] | None) -> None
     remote_workdir = None
     if workdir:
         remote_workdir = sync_workdir(
@@ -795,6 +797,7 @@ def ssh_setup_and_connect(
             ssh_key_file=local_ssh_key_path,
             use_password=use_password,
             workdir=remote_workdir,
+            command=command,
         )
     else:
         if local_ssh_key_path:
@@ -922,6 +925,10 @@ def cmd_ssh(args, debug=False):
     ssh_keys_map = settings.get("ssh_keys", {})
     local_ssh_key_path = ssh_keys_map.get(ssh_key_name) if ssh_key_name else None
 
+    remote_command = [
+        a for a in getattr(args, "remote_command", []) if a != "--"
+    ] or None
+
     if debug:
         ssh_cmd = [
             *base_ssh_cmd(ssh_key_file=local_ssh_key_path, use_password=use_password),
@@ -936,6 +943,7 @@ def cmd_ssh(args, debug=False):
             do_ssh=True,
             workdir=workdir,
             conf=None,
+            command=remote_command,
         )
 
 
@@ -1294,7 +1302,15 @@ Examples:
         "name", nargs="?", help="Server name (default: instance for current directory)"
     )
 
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    remote_command = []
+    if "--" in argv:
+        idx = argv.index("--")
+        remote_command = argv[idx + 1 :]
+        argv = argv[:idx]
+
+    args = parser.parse_args(argv)
+    args.remote_command = remote_command
 
     global VERBOSITY
     VERBOSITY = args.verbose
